@@ -24,8 +24,8 @@ if "data" not in st.session_state:
 data = st.session_state.data
 
 # Настройка веб-страницы
-st.set_page_config(page_title="Онлайн Склад v4", layout="wide", page_icon="📦")
-st.title("📦 Мой Онлайн Склад — Панель Управления")
+st.set_page_config(page_title="Магазин Сулайман-Тоо", layout="wide", page_icon="🏬")
+st.title("🏬 Магазин «Сулайман-Тоо» — Учет и Продажи")
 
 # Навигационное меню в боковой панели
 menu = st.sidebar.radio("Навигация по системе", ["📋 Склад и Приход", "🛒 Оформление Продаж", "📈 Финансовые Отчеты"])
