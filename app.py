@@ -25,7 +25,18 @@ data = st.session_state.data
 st.set_page_config(page_title="Магазин Сулайман-Тоо", layout="wide", page_icon="🏬")
 st.title("🏬 Магазин «Сулайман-Тоо» — Учет и Продажи")
 
+# Навигационное меню
 menu = st.sidebar.radio("Разделы", ["📦 Склад / Поступление", "💰 Касса / Продажи", "📊 Отчеты по дням"])
+
+# Кнопка очистки данных в боковой панели
+st.sidebar.markdown("---")
+st.sidebar.subheader("Настройки системы")
+if st.sidebar.button("⚠️ Полная очистка склада", type="secondary", help="Удалит все товары и историю продаж"):
+    data = {"products": {}, "sales": []}
+    st.session_state.data = data
+    save_data(data)
+    st.sidebar.success("База данных успешно очищена!")
+    st.rerun()
 
 def save_product_to_dict(name, qty, cost, price):
     if name in data["products"]:
@@ -40,13 +51,9 @@ if menu == "📦 Склад / Поступление":
     st.header("Управление товарами")
     
     st.subheader("📥 Массовая загрузка товаров из Excel (.xlsx или .csv)")
-    st.info("💡 Теперь можно загружать ОБЫЧНЫЙ файл Excel (.xlsx)! Создайте 4 колонки: Название, Кол-во, Закупка, Продажа. Первая строка — заголовки.")
-    
-    # Теперь принимаем и csv, и xlsx
     uploaded_file = st.file_uploader("Выберите ваш файл таблицы", type=["csv", "xlsx"])
     if uploaded_file is not None:
         try:
-            # Определяем тип файла по его имени
             if uploaded_file.name.endswith('.xlsx'):
                 df = pd.read_excel(uploaded_file)
             else:
@@ -67,7 +74,7 @@ if menu == "📦 Склад / Поступление":
                         p_cost = float(str(row.iloc[2]).strip().replace(' ', '').replace(',', '.'))
                         p_price = float(str(row.iloc[3]).strip().replace(' ', '').replace(',', '.'))
                         
-                        save_product_to_dict(p_name, p_qty, p_cost, p_price)
+                        data["products"][p_name] = {"qty": p_qty, "cost": p_cost, "price": p_price}
                         imported_count += 1
                     except: continue
                 
@@ -75,16 +82,11 @@ if menu == "📦 Склад / Поступление":
                     save_data(data)
                     st.success(f"🚀 Успешно загружено товаров: {imported_count}!")
                     st.rerun()
-                else:
-                    st.error("В файле не найдено строк с правильными данными. Проверьте, что во 2, 3 и 4 колонках написаны только числа.")
-            else:
-                st.error("В вашей таблице должно быть как минимум 4 колонки!")
         except Exception as e:
-            st.error(f"Не удалось прочитать файл. Ошибка: {e}")
+            st.error(f"Не удалось прочитать файл: {e}")
 
     st.markdown("---")
     
-    # 2. РУЧНОЙ ВВОД И РЕДАКТИРОВАНИЕ
     col_add, col_edit = st.columns(2)
     with col_add:
         st.subheader("➕ Добавить один товар вручную")
@@ -122,7 +124,7 @@ if menu == "📦 Склад / Поступление":
                 if save_changes:
                     data["products"][selected_edit_key] = {"qty": new_qty, "cost": new_cost, "price": new_price}
                     save_data(data)
-                    st.success(f"Товар '{selected_edit_display}' updated!")
+                    st.success(f"Товар '{selected_edit_display}' обновлен!")
                     st.rerun()
                 if delete_prod:
                     del data["products"][selected_edit_key]
@@ -132,9 +134,13 @@ if menu == "📦 Склад / Поступление":
 
     st.markdown("---")
     st.subheader("📋 Список всех товаров на складе")
-    if data["products"]:
+    
+    # ИСПРАВЛЕНО: Показываем только те товары, у которых остаток больше 0
+    active_products = {n: info for n, info in data["products"].items() if info["qty"] > 0}
+    
+    if active_products:
         stock_table = []
-        for n, info in data["products"].items():
+        for n, info in active_products.items():
             stock_table.append({
                 "Товар": n.capitalize(), "Остаток": info["qty"], 
                 "Закупка": info["cost"], "Продажа": info["price"],
@@ -142,9 +148,9 @@ if menu == "📦 Склад / Поступление":
             })
         st.dataframe(stock_table, use_container_width=True)
     else:
-        st.write("Склад пока пуст.")
+        st.write("Склад пуст или все товары распроданы.")
 
-# --- ОСТАЛЬНЫЕ ВКЛАДКИ (КАССА И ОТЧЕТЫ) ---
+# --- ВКЛАДКА 2: КАССА ---
 elif menu == "💰 Касса / Продажи":
     st.header("Оформить продажу")
     if not data["products"]:
@@ -172,15 +178,38 @@ elif menu == "💰 Касса / Продажи":
                 st.success(f"Продано на {t_sale}!")
                 st.rerun()
 
+# --- ВКЛАДКА 3: ОТЧЕТЫ С ФИЛЬТРОМ ДАТ ---
 elif menu == "📊 Отчеты по дням":
-    st.header("Аналитика магазина")
+    st.header("Аналитика и история продаж")
     if not data["sales"]:
         st.write("Продаж еще не было.")
     else:
         df = pd.DataFrame(data["sales"])
-        c1, c2 = st.columns(2)
-        c1.metric("💰 Выручка", f"{df['total_sale'].sum():,.2f}")
-        c2.metric("📈 Прибыль", f"{df['profit'].sum():,.2f}")
-        st.subheader("Статистика по дням")
-        daily = df.groupby("day").agg({"qty": "sum", "total_sale": "sum", "profit": "sum"}).reset_index()
-        st.dataframe(daily.sort_values(by="day", ascending=False), use_container_width=True)
+        df['day'] = pd.to_datetime(df['day']).dt.date
+        
+        # Инструмент выбора диапазона дат
+        st.subheader("🔍 Выберите период для просмотра отчета")
+        today = datetime.now().date()
+        date_range = st.date_input("Диапазон дат", value=(today, today))
+        
+        # Фильтрация данных по выбранным датам
+        if isinstance(date_range, tuple) and len(date_range) == 2:
+            start_date, end_date = date_range
+            filtered_df = df[(df['day'] >= start_date) & (df['day'] <= end_date)]
+        else:
+            filtered_df = df
+            
+        if filtered_df.empty:
+            st.info("За выбранный период продаж не найдено.")
+        else:
+            c1, c2 = st.columns(2)
+            c1.metric("💰 Выручка за период", f"{filtered_df['total_sale'].sum():,.2f} руб.")
+            c2.metric("📈 Прибыль за период", f"{filtered_df['profit'].sum():,.2f} text руб.")
+            
+            st.subheader("📋 Детальный список проданных товаров")
+            display_df = filtered_df.rename(columns={
+                "date": "Дата/Время", "day": "Дата", "name": "Товар", 
+                "qty": "Кол-во (шт)", "total_sale": "Сумма продажи", 
+                "total_cost": "Себестоимость", "profit": "Прибыль"
+            })
+            st.dataframe(display_df.sort_values(by="Дата/Время", ascending=False), use_container_width=True)
