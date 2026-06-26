@@ -25,13 +25,11 @@ data = st.session_state.data
 st.set_page_config(page_title="Магазин Сулайман-Тоо", layout="wide", page_icon="🏬")
 st.title("🏬 Магазин «Сулайман-Тоо» — Учет и Продажи")
 
-# Навигационное меню
 menu = st.sidebar.radio("Разделы", ["📦 Склад / Поступление", "💰 Касса / Продажи", "📊 Отчеты по дням"])
 
-# Кнопка очистки данных в боковой панели
 st.sidebar.markdown("---")
 st.sidebar.subheader("Настройки системы")
-if st.sidebar.button("⚠️ Полная очистка склада", type="secondary", help="Удалит все товары и историю продаж"):
+if st.sidebar.button("⚠️ Полная очистка склада", type="secondary"):
     data = {"products": {}, "sales": []}
     st.session_state.data = data
     save_data(data)
@@ -50,10 +48,8 @@ def save_product_to_dict(name, qty, cost, price):
 if menu == "📦 Склад / Поступление":
     st.header("Управление товарами")
     
-    # ФИКС: Показываем только те товары, у которых остаток больше 0
     active_products = {n: info for n, info in data["products"].items() if info["qty"] > 0}
     
-    # НОВОЕ: Отображение общих итогов над данными в виде карточек
     st.subheader("📊 Общие итоги по складу")
     if active_products:
         total_qty = sum(info["qty"] for info in active_products.values())
@@ -69,7 +65,6 @@ if menu == "📦 Склад / Поступление":
         
     st.markdown("---")
 
-    # 1. МАССОВАЯ ЗАГРУЗКА
     st.subheader("📥 Массовая загрузка товаров из Excel (.xlsx или .csv)")
     uploaded_file = st.file_uploader("Выберите ваш файл таблицы", type=["csv", "xlsx"])
     if uploaded_file is not None:
@@ -164,58 +159,80 @@ if menu == "📦 Склад / Поступление":
             })
         st.dataframe(stock_table, use_container_width=True)
     else:
-        st.write("Склад пуст или все товары распроданы.")
+        st.write("Склад пуст.")
 
-# --- ВКЛАДКА 2: КАССА (ОБНОВЛЕННАЯ) ---
+# --- ВКЛАДКА 2: КАССА (С ОКНОМ ПОДТВЕРЖДЕНИЯ) ---
 elif menu == "💰 Касса / Продажи":
     st.header("Оформить продажу")
     if not data["products"]:
         st.warning("Сначала добавьте товары на склад.")
     else:
-        # Берем только те товары, которые реально есть в наличии
         plist = {n.capitalize(): n for n, i in data["products"].items() if i["qty"] > 0}
         if not plist:
             st.error("Нет товаров в наличии!")
         else:
-            # ИСПРАВЛЕНО: Теперь поиск встроен прямо в выпадающий список (selectbox в Streamlit поддерживает ввод текста для поиска)
             sel_display = st.selectbox("🔍 Начните вводить название товара для поиска", list(plist.keys()))
             sel_key = plist[sel_display]
             prod = data["products"][sel_key]
             
-            st.info(f"📋 Справочно из базы данных — Стандартная розничная цена: **{prod['price']} руб.** | Остаток: **{prod['qty']} шт.**")
+            st.info(f"📋 Стандартная розничная цена: **{prod['price']} руб.** | Остаток: **{prod['qty']} шт.**")
             
-            # Форма оформления продажи
-            with st.form("sale_form"):
-                sqty = st.number_input("Количество для продажи (шт)", min_value=1, max_value=int(prod["qty"]), value=1)
-                
-                # НОВОЕ: Возможность вписать индивидуальную цену продажи вручную
-                custom_price = st.number_input("💰 Фактическая цена продажи за 1 шт (можно изменить)", min_value=0.0, value=float(prod['price']))
-                
-                # НОВОЕ: Выбор типа оплаты
-                pay_method = st.radio("💳 Способ оплаты", ["Наличные", "Рассрочка"], horizontal=True)
-                
-                btn_sell = st.form_submit_button("💵 Подтвердить и продать", type="primary")
-                
-                if btn_sell:
-                    data["products"][sel_key]["qty"] -= sqty
-                    t_sale = sqty * custom_price
-                    t_cost = sqty * prod["cost"]  # Себестоимость берется фиксированная из базы
-                    
-                    data["sales"].append({
-                        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        "day": datetime.now().strftime("%Y-%m-%d"),
-                        "name": sel_display, 
-                        "qty": sqty,
-                        "total_sale": t_sale, 
-                        "total_cost": t_cost, 
-                        "profit": t_sale - t_cost,
-                        "payment": pay_method  # Сохраняем тип оплаты
-                    })
-                    save_data(data)
-                    st.success(f"Продано! Товар: {sel_display} ({sqty} шт.) на сумму {t_sale} руб. Метод: {pay_method}")
-                    st.rerun()
+            # Ввод параметров продажи (без автоматического сохранения)
+            sqty = st.number_input("Количество для продажи (шт)", min_value=1, max_value=int(prod["qty"]), value=1)
+            custom_price = st.number_input("💰 Фактическая цена продажи за 1 шт", min_value=0.0, value=float(prod['price']))
+            pay_method = st.radio("💳 Способ оплаты", ["Наличные", "Рассрочка"], horizontal=True)
+            
+            # Рассчитываем итоговую сумму сделки для вывода пользователю
+            total_sale_sum = sqty * custom_price
+            
+            # Главная кнопка
+            if st.button("💵 Продать товар", type="primary"):
+                # ИСПРАВЛЕНО: Активируем всплывающее диалоговое окно (Pop-up)
+                st.session_state.show_confirmation = {
+                    "key": sel_key, "name": sel_display, "qty": sqty, 
+                    "price": custom_price, "total": total_sale_sum, "payment": pay_method
+                }
 
-# --- ВКЛАДКА 3: ОТЧЕТЫ С ТИПОМ ОПЛАТЫ ---
+            # НОВОЕ: Всплывающее окно подтверждения
+            if "show_confirmation" in st.session_state and st.session_state.show_confirmation:
+                conf = st.session_state.show_confirmation
+                
+                @st.dialog("📋 Подтверждение операции")
+                def confirm_dialog():
+                    st.warning("Внимательно проверьте данные перед отправкой в базу:")
+                    st.markdown(f"**Товар:** {conf['name']}")
+                    st.markdown(f"**Количество:** {conf['qty']} шт.")
+                    st.markdown(f"**Цена за шт:** {conf['price']:.2f} руб.")
+                    st.markdown(f"### Итого к оплате: {conf['total']:.2f} руб.")
+                    st.markdown(f"**Способ оплаты:** {conf['payment']}")
+                    
+                    st.write("")
+                    col_yes, col_no = st.columns(2)
+                    
+                    if col_yes.button("✅ Да, всё верно", type="primary", use_container_width=True):
+                        # Проводим транзакцию
+                        data["products"][conf['key']]["qty"] -= conf['qty']
+                        t_cost = conf['qty'] * data["products"][conf['key']]["cost"]
+                        
+                        data["sales"].append({
+                            "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                            "day": datetime.now().strftime("%Y-%m-%d"),
+                            "name": conf['name'], "qty": conf['qty'],
+                            "total_sale": conf['total'], "total_cost": t_cost, 
+                            "profit": conf['total'] - t_cost, "payment": conf['payment']
+                        })
+                        save_data(data)
+                        st.session_state.show_confirmation = None
+                        st.success("🎉 Продажа успешно зафиксирована!")
+                        st.rerun()
+                        
+                    if col_no.button("❌ Отмена", type="secondary", use_container_width=True):
+                        st.session_state.show_confirmation = None
+                        st.rerun()
+                
+                confirm_dialog()
+
+# --- ВКЛАДКА 3: ОТЧЕТЫ (С РАЗДЕЛЕНИЕМ ПО ТАБАМ) ---
 elif menu == "📊 Отчеты по дням":
     st.header("Аналитика и история продаж")
     if not data["sales"]:
@@ -237,29 +254,41 @@ elif menu == "📊 Отчеты по дням":
         if filtered_df.empty:
             st.info("За выбранный период продаж не найдено.")
         else:
+            # Считаем общие метрики по выбранному периоду
             c1, c2 = st.columns(2)
-            c1.metric("💰 Выручка за период", f"{filtered_df['total_sale'].sum():,.2f} руб.")
-            c2.metric("📈 Чистая прибыль за период", f"{filtered_df['profit'].sum():,.2f} руб.")
+            c1.metric("💰 Общая Выручка", f"{filtered_df['total_sale'].sum():,.2f} руб.")
+            c2.metric("📈 Общая Чистая прибыль", f"{filtered_df['profit'].sum():,.2f} руб.")
             
-            # Дополнительное отображение по типам оплаты, если колонка существует
-            if "payment" in filtered_df.columns:
-                st.subheader("💳 Разделение по типам оплаты за период")
-                p1, p2 = st.columns(2)
-                cash_sum = filtered_df[filtered_df['payment'] == 'Наличные']['total_sale'].sum()
-                credit_sum = filtered_df[filtered_df['payment'] == 'Рассрочка']['total_sale'].sum()
-                p1.metric("💵 Наличными", f"{cash_sum:,.2f} руб.")
-                p2.metric("📝 В рассрочку", f"{credit_sum:,.2f} руб.")
+            st.markdown("---")
             
-            st.subheader("📋 Детальный список проданных товаров")
+            # ИСПРАВЛЕНО: Создаем три раздельные вкладки для видов оплаты
+            st.subheader("📋 Детализация продаж по типам оплаты")
+            tab1, tab2, tab3 = st.tabs(["Все продажи", "💵 Наличные", "📝 Рассрочка"])
             
-            # Переименовываем колонки для красивого вывода
-            rename_dict = {
-                "date": "Дата/Время", "day": "Дата", "name": "Товар", 
-                "qty": "Кол-во (шт)", "total_sale": "Сумма продажи", 
-                "total_cost": "Себестоимость", "profit": "Прибыль"
-            }
-            if "payment" in filtered_df.columns:
-                rename_dict["payment"] = "Тип оплаты"
+            # Функция для генерации красивой таблицы
+            def get_clean_table(dataframe):
+                if dataframe.empty:
+                    return None
+                rename_dict = {
+                    "date": "Дата/Время", "day": "Дата", "name": "Товар", 
+                    "qty": "Кол-во (шт)", "total_sale": "Сумма продажи", 
+                    "total_cost": "Себестоимость", "profit": "Прибыль", "payment": "Тип оплаты"
+                }
+                return dataframe.rename(columns=rename_dict).sort_values(by="Дата/Время", ascending=False)
+
+            with tab1:
+                st.write(f"**Всего сделок:** {len(filtered_df)}")
+                t_all = get_clean_table(filtered_df)
+                st.dataframe(t_all, use_container_width=True) if t_all is not None else st.write("Нет данных.")
                 
-            display_df = filtered_df.rename(columns=rename_dict)
-            st.dataframe(display_df.sort_values(by="Дата/Время", ascending=False), use_container_width=True)
+            with tab2:
+                cash_df = filtered_df[filtered_df['payment'] == 'Наличные']
+                st.metric("Сумма наличных в кассе", f"{cash_df['total_sale'].sum():,.2f} руб.")
+                t_cash = get_clean_table(cash_df)
+                st.dataframe(t_cash, use_container_width=True) if t_cash is not None else st.write("Продаж за наличные не было.")
+                
+            with tab3:
+                credit_df = filtered_df[filtered_df['payment'] == 'Рассрочка']
+                st.metric("Общая сумма в рассрочке", f"{credit_df['total_sale'].sum():,.2f} руб.")
+                t_credit = get_clean_table(credit_df)
+                st.dataframe(t_credit, use_container_width=True) if t_credit is not None else st.write("Продаж в рассрочку не было.")
