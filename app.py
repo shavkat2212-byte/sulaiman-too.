@@ -42,31 +42,37 @@ def save_product_to_dict(name, qty, cost, price):
 if menu == "📦 Склад / Поступление":
     st.header("Управление товарами")
     
-    # 1. СУПЕР-НАДЕЖНАЯ ЗАГРУЗКА ИЗ EXCEL / CSV
+    # 1. ЗАГРУЗКА ИЗ EXCEL 2010 (CSV)
     st.subheader("📥 Массовая загрузка товаров из Excel (CSV)")
-    st.info("Создайте Excel с 4 колонками (Название, Кол-во, Закупка, Продажа). Первая строка — заголовки.")
+    st.info("Инструкция для Excel 2010: в таблице должно быть 4 колонки. Первая строка — заголовки (Название, Кол-во, Закупка, Продажа).")
     
     uploaded_file = st.file_uploader("Выберите ваш файл .csv", type=["csv"])
     if uploaded_file is not None:
         try:
-            # Читаем файл через Pandas, который автоматически определяет разделители и кодировки
-            df = pd.read_csv(uploaded_file, sep=None, engine='python')
+            # Настройка специально под Excel 2010: пробуем cp1251 (Windows), если нет - то utf-8
+            try:
+                df = pd.read_csv(uploaded_file, sep=None, engine='python', encoding='cp1251')
+            except:
+                uploaded_file.seek(0) # Сбрасываем указатель файла для повторного чтения
+                df = pd.read_csv(uploaded_file, sep=None, engine='python', encoding='utf-8')
             
-            # Если колонок больше или меньше, берем первые 4
             if df.shape[1] >= 4:
                 imported_count = 0
                 for index, row in df.iterrows():
                     try:
                         p_name = str(row.iloc[0]).strip().lower()
                         
-                        # Защита от пустых строк
                         if not p_name or p_name == 'nan':
                             continue
                             
-                        # Чистим числа от возможных запятых в Excel
-                        p_qty = int(float(str(row.iloc[1]).replace(',', '.')))
-                        p_cost = float(str(row.iloc[2]).replace(',', '.'))
-                        p_price = float(str(row.iloc[3]).replace(',', '.'))
+                        # Очищаем числа от пробелов и заменяем запятые на точки
+                        qty_str = str(row.iloc[1]).strip().replace(' ', '').replace(',', '.')
+                        cost_str = str(row.iloc[2]).strip().replace(' ', '').replace(',', '.')
+                        price_str = str(row.iloc[3]).strip().replace(' ', '').replace(',', '.')
+                        
+                        p_qty = int(float(qty_str))
+                        p_cost = float(cost_str)
+                        p_price = float(price_str)
                         
                         save_product_to_dict(p_name, p_qty, p_cost, p_price)
                         imported_count += 1
@@ -75,10 +81,10 @@ if menu == "📦 Склад / Поступление":
                 
                 if imported_count > 0:
                     save_data(data)
-                    st.success(f"🚀 Успешно загружено и обновлено товаров: {imported_count}!")
+                    st.success(f"🚀 Успешно загружено и обновлено товаров из Excel 2010: {imported_count}!")
                     st.rerun()
                 else:
-                    st.error("В файле не найдено строк с правильными данными.")
+                    st.error("В файле не найдено строк с правильными данными. Проверьте числа.")
             else:
                 st.error("В вашей таблице должно быть как минимум 4 колонки!")
         except Exception as e:
