@@ -12,7 +12,6 @@ def load_data():
         with open(DB_FILE, "r", encoding="utf-8") as f:
             try:
                 loaded = json.load(f)
-                # Безопасная проверка формата
                 if "products" in loaded and loaded["products"]:
                     first_item = next(iter(loaded["products"].values()))
                     if not isinstance(first_item, list):
@@ -45,7 +44,6 @@ if st.sidebar.button("⚠️ Перезагрузить базу (Очистит
     st.sidebar.success("База данных успешно очищена!")
     st.rerun()
 
-# Функция умного сохранения: если товар в этот день уже заносился, мы ОБНОВЛЯЕМ (перезаписываем) данные, а не суммируем бесконечно
 def save_product_smart(name, qty, cost, price, date_str):
     if name not in data["products"]:
         data["products"][name] = []
@@ -53,7 +51,6 @@ def save_product_smart(name, qty, cost, price, date_str):
     found = False
     for batch in data["products"][name]:
         if batch["date"] == date_str:
-            # Обновляем на актуальные значения из последней загрузки файла
             batch["qty"] = qty
             batch["cost"] = cost
             batch["price"] = price
@@ -96,8 +93,6 @@ if menu == "📦 Склад / Поступление":
     st.markdown("---")
 
     st.subheader("📥 Загрузка/Обновление товаров из Excel (.xlsx или .csv)")
-    st.write("💡 При загрузке файлы автоматически получают сегодняшнюю дату сохранения в БД. Если товар от сегодняшнего числа уже был, его остаток обновится актуальными данными из файла.")
-    
     uploaded_file = st.file_uploader("Выберите файл таблицы", type=["csv", "xlsx"])
     if uploaded_file is not None:
         try:
@@ -149,7 +144,7 @@ if menu == "📦 Склад / Поступление":
                     today_str = datetime.now().strftime("%Y-%m-%d")
                     save_product_smart(name, qty, cost, price, today_str)
                     save_data(data)
-                    st.success("Успешно сохранено с сегодняшней датой!")
+                    st.success("Успешно сохранено!")
                     st.rerun()
 
     with col_edit:
@@ -309,7 +304,7 @@ elif menu == "💰 Касса / Продажи":
                         st.rerun()
                 confirm_dialog()
 
-# --- ВКЛАДКА 3: ОТЧЕТЫ ---
+# --- ВКЛАДКА 3: ОТЧЕТЫ (ИСПРАВЛЕНА ОШИБКА ДУБЛИРОВАНИЯ КЛЮЧЕЙ) ---
 elif menu == "📊 Отчеты по дням":
     st.header("Аналитика и история продаж")
     if not data["sales"]:
@@ -339,7 +334,8 @@ elif menu == "📊 Отчеты по дням":
             st.subheader("📋 Детализация продаж по типам оплаты")
             tab1, tab2, tab3 = st.tabs(["Все продажи", "💵 Наличные", "📝 Рассрочка"])
             
-            def render_sales_table_with_actions(dataframe):
+            # ФИКС: Добавлен префикс tab_name, чтобы кнопки отмены имели разные уникальные ключи на вкладках
+            def render_sales_table_with_actions(dataframe, tab_name):
                 if dataframe.empty:
                     st.write("Нет операций за этот период.")
                     return
@@ -361,7 +357,9 @@ elif menu == "📊 Отчеты по дням":
                     r4.write(f"{row['total_sale']:.2f} руб.")
                     r5.write(row.get('payment', 'Наличные'))
                     
-                    if r6.button("❌ Отменить", key=f"del_{row.get('id', idx)}", type="secondary"):
+                    # Ключ теперь уникальный для каждого таба!
+                    button_key = f"del_{tab_name}_{row.get('id', idx)}"
+                    if r6.button("❌ Отменить", key=button_key, type="secondary"):
                         st.session_state.show_sale_delete = {
                             "index_in_data_sales": idx, 
                             "name": row['name'], 
@@ -411,8 +409,8 @@ elif menu == "📊 Отчеты по дням":
                 delete_sale_dialog()
 
             with tab1:
-                render_sales_table_with_actions(filtered_df)
+                render_sales_table_with_actions(filtered_df, "all")
             with tab2:
-                render_sales_table_with_actions(filtered_df[filtered_df['payment'] == 'Наличные'])
+                render_sales_table_with_actions(filtered_df[filtered_df['payment'] == 'Наличные'], "cash")
             with tab3:
-                render_sales_table_with_actions(filtered_df[filtered_df['payment'] == 'Рассрочка'])
+                render_sales_table_with_actions(filtered_df[filtered_df['payment'] == 'Рассрочка'], "credit")
