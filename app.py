@@ -17,17 +17,14 @@ def save_data(data):
     with open(DB_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-# Инициализация сессии
 if "data" not in st.session_state:
     st.session_state.data = load_data()
 
 data = st.session_state.data
 
-# Настройка веб-страницы
 st.set_page_config(page_title="Магазин Сулайман-Тоо", layout="wide", page_icon="🏬")
 st.title("🏬 Магазин «Сулайман-Тоо» — Учет и Продажи")
 
-# Навигационное меню
 menu = st.sidebar.radio("Разделы", ["📦 Склад / Поступление", "💰 Касса / Продажи", "📊 Отчеты по дням"])
 
 def save_product_to_dict(name, qty, cost, price):
@@ -42,49 +39,44 @@ def save_product_to_dict(name, qty, cost, price):
 if menu == "📦 Склад / Поступление":
     st.header("Управление товарами")
     
-    # 1. ЗАГРУЗКА ИЗ EXCEL 2010 (CSV)
-    st.subheader("📥 Массовая загрузка товаров из Excel (CSV)")
-    st.info("Инструкция для Excel 2010: в таблице должно быть 4 колонки. Первая строка — заголовки (Название, Кол-во, Закупка, Продажа).")
+    st.subheader("📥 Массовая загрузка товаров из Excel (.xlsx или .csv)")
+    st.info("💡 Теперь можно загружать ОБЫЧНЫЙ файл Excel (.xlsx)! Создайте 4 колонки: Название, Кол-во, Закупка, Продажа. Первая строка — заголовки.")
     
-    uploaded_file = st.file_uploader("Выберите ваш файл .csv", type=["csv"])
+    # Теперь принимаем и csv, и xlsx
+    uploaded_file = st.file_uploader("Выберите ваш файл таблицы", type=["csv", "xlsx"])
     if uploaded_file is not None:
         try:
-            # Настройка специально под Excel 2010: пробуем cp1251 (Windows), если нет - то utf-8
-            try:
-                df = pd.read_csv(uploaded_file, sep=None, engine='python', encoding='cp1251')
-            except:
-                uploaded_file.seek(0) # Сбрасываем указатель файла для повторного чтения
-                df = pd.read_csv(uploaded_file, sep=None, engine='python', encoding='utf-8')
+            # Определяем тип файла по его имени
+            if uploaded_file.name.endswith('.xlsx'):
+                df = pd.read_excel(uploaded_file)
+            else:
+                try:
+                    df = pd.read_csv(uploaded_file, sep=None, engine='python', encoding='cp1251')
+                except:
+                    uploaded_file.seek(0)
+                    df = pd.read_csv(uploaded_file, sep=None, engine='python', encoding='utf-8')
             
             if df.shape[1] >= 4:
                 imported_count = 0
                 for index, row in df.iterrows():
                     try:
                         p_name = str(row.iloc[0]).strip().lower()
-                        
-                        if not p_name or p_name == 'nan':
-                            continue
+                        if not p_name or p_name == 'nan': continue
                             
-                        # Очищаем числа от пробелов и заменяем запятые на точки
-                        qty_str = str(row.iloc[1]).strip().replace(' ', '').replace(',', '.')
-                        cost_str = str(row.iloc[2]).strip().replace(' ', '').replace(',', '.')
-                        price_str = str(row.iloc[3]).strip().replace(' ', '').replace(',', '.')
-                        
-                        p_qty = int(float(qty_str))
-                        p_cost = float(cost_str)
-                        p_price = float(price_str)
+                        p_qty = int(float(str(row.iloc[1]).strip().replace(' ', '').replace(',', '.')))
+                        p_cost = float(str(row.iloc[2]).strip().replace(' ', '').replace(',', '.'))
+                        p_price = float(str(row.iloc[3]).strip().replace(' ', '').replace(',', '.'))
                         
                         save_product_to_dict(p_name, p_qty, p_cost, p_price)
                         imported_count += 1
-                    except:
-                        continue
+                    except: continue
                 
                 if imported_count > 0:
                     save_data(data)
-                    st.success(f"🚀 Успешно загружено и обновлено товаров из Excel 2010: {imported_count}!")
+                    st.success(f"🚀 Успешно загружено товаров: {imported_count}!")
                     st.rerun()
                 else:
-                    st.error("В файле не найдено строк с правильными данными. Проверьте числа.")
+                    st.error("В файле не найдено строк с правильными данными. Проверьте, что во 2, 3 и 4 колонках написаны только числа.")
             else:
                 st.error("В вашей таблице должно быть как минимум 4 колонки!")
         except Exception as e:
@@ -94,7 +86,6 @@ if menu == "📦 Склад / Поступление":
     
     # 2. РУЧНОЙ ВВОД И РЕДАКТИРОВАНИЕ
     col_add, col_edit = st.columns(2)
-    
     with col_add:
         st.subheader("➕ Добавить один товар вручную")
         with st.form("add_form", clear_on_submit=True):
@@ -131,18 +122,15 @@ if menu == "📦 Склад / Поступление":
                 if save_changes:
                     data["products"][selected_edit_key] = {"qty": new_qty, "cost": new_cost, "price": new_price}
                     save_data(data)
-                    st.success(f"Товар '{selected_edit_display}' обновлен!")
+                    st.success(f"Товар '{selected_edit_display}' updated!")
                     st.rerun()
-                    
                 if delete_prod:
                     del data["products"][selected_edit_key]
                     save_data(data)
-                    st.warning(f"Товар '{selected_edit_display}' удален со склада.")
+                    st.warning(f"Товар '{selected_edit_display}' удален.")
                     st.rerun()
 
     st.markdown("---")
-
-    # 3. ТАБЛИЦА ОСТАТКОВ
     st.subheader("📋 Список всех товаров на складе")
     if data["products"]:
         stock_table = []
