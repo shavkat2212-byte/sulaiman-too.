@@ -76,167 +76,186 @@ def save_product_smart(name, qty, cost, price, date_str):
 if menu == "📦 Склад / Поступление":
     st.header("Управление товарами")
     
+    # Считаем точные итоги по складу (только для товаров > 0)
     total_qty = 0
     total_cost_sum = 0.0
     total_price_sum = 0.0
-    
-    for name, batches in data["products"].items():
-        if isinstance(batches, list):
-            for b in batches:
-                if b["qty"] > 0:
-                    total_qty += b["qty"]
-                    total_cost_sum += b["qty"] * b["cost"]
-                    total_price_sum += b["qty"] * b["price"]
-                
-    st.subheader("📊 Общие итоги по складу")
-    if total_qty > 0:
-        m1, m2, m3 = st.columns(3)
-        m1.metric("📦 Всего товаров на складе", f"{total_qty} шт.")
-        m2.metric("💰 Общая сумма в закупке", f"{total_cost_sum:,.2f} сом")
-        m3.metric("📈 Потенциальная выручка", f"{total_price_sum:,.2f} сом")
-    else:
-        st.info("Склад пуст, показатели появятся после добавления товаров.")
-        
-    st.markdown("---")
-
-    st.subheader("📥 Загрузка/Обновление товаров из Excel (.xlsx или .csv)")
-    uploaded_file = st.file_uploader("Выберите файл таблицы", type=["csv", "xlsx"])
-    if uploaded_file is not None:
-        try:
-            if uploaded_file.name.endswith('.xlsx'):
-                df = pd.read_excel(uploaded_file)
-            else:
-                try:
-                    df = pd.read_csv(uploaded_file, sep=None, engine='python', encoding='cp1251')
-                except:
-                    uploaded_file.seek(0)
-                    df = pd.read_csv(uploaded_file, sep=None, engine='python', encoding='utf-8')
-            
-            if df.shape[1] >= 4:
-                imported_count = 0
-                today_str = datetime.now().strftime("%Y-%m-%d")
-                for index, row in df.iterrows():
-                    try:
-                        p_name = str(row.iloc[0]).strip().lower()
-                        if not p_name or p_name == 'nan': continue
-                            
-                        p_qty = int(float(str(row.iloc[1]).strip().replace(' ', '').replace(',', '.')))
-                        p_cost = float(str(row.iloc[2]).strip().replace(' ', '').replace(',', '.'))
-                        p_price = float(str(row.iloc[3]).strip().replace(' ', '').replace(',', '.'))
-                        
-                        save_product_smart(p_name, p_qty, p_cost, p_price, today_str)
-                        imported_count += 1
-                    except: continue
-                
-                if imported_count > 0:
-                    save_data(data)
-                    st.success(f"🚀 Склад успешно синхронизирован! Обработано товаров: {imported_count}")
-                    st.rerun()
-        except Exception as e:
-            st.error(f"Не удалось прочитать файл: {e}")
-
-    st.markdown("---")
-    
-    col_add, col_edit = st.columns(2)
-    with col_add:
-        st.subheader("➕ Добавить товар вручную")
-        with st.form("add_form", clear_on_submit=True):
-            name = st.text_input("Название товара").strip().lower()
-            qty = st.number_input("Количество (шт)", min_value=1, value=1)
-            cost = st.number_input("Закупка (себестоимость), сом", min_value=0.0)
-            price = st.number_input("Цена продажи, сом", min_value=0.0)
-            
-            if st.form_submit_button("Сохранить в БД"):
-                if name:
-                    today_str = datetime.now().strftime("%Y-%m-%d")
-                    save_product_smart(name, qty, cost, price, today_str)
-                    save_data(data)
-                    st.success("Успешно сохранено!")
-                    st.rerun()
-
-    with col_edit:
-        st.subheader("✏️ Редактировать / Удалить партию")
-        if not data["products"]:
-            st.write("На складе еще нет товаров.")
-        else:
-            all_batches_options = {}
-            for p_name, batches in data["products"].items():
-                if isinstance(batches, list):
-                    for b_idx, b in enumerate(batches):
-                        if b["qty"] > 0:
-                            display_label = f"{p_name.capitalize()} (Приход: {b['date']}) — Остаток: {b['qty']} шт."
-                            all_batches_options[display_label] = (p_name, b_idx)
-            
-            if not all_batches_options:
-                st.write("Нет активных товаров для изменения.")
-            else:
-                selected_batch_label = st.selectbox("Выберите запись для изменения", list(all_batches_options.keys()))
-                p_key, b_index = all_batches_options[selected_batch_label]
-                current_batch = data["products"][p_key][b_index]
-                
-                with st.form("edit_form"):
-                    new_qty = st.number_input("Изменить остаток (шт)", min_value=0, value=int(current_batch["qty"]))
-                    new_cost = st.number_input("Цена закупки, сом", min_value=0.0, value=float(current_batch["cost"]))
-                    new_price = st.number_input("Цена продажи, сом", min_value=0.0, value=float(current_batch["price"]))
-                    
-                    c_btn1, c_btn2 = st.columns(2)
-                    save_changes = c_btn1.form_submit_button("💾 Сохранить изменения")
-                    delete_batch_click = c_btn2.form_submit_button("🗑️ Удалить", type="secondary")
-                    
-                    if save_changes:
-                        data["products"][p_key][b_index] = {
-                            "date": current_batch["date"], "qty": new_qty, "cost": new_cost, "price": new_price
-                        }
-                        save_data(data)
-                        st.success("Данные успешно изменены!")
-                        st.rerun()
-                    
-                    if delete_batch_click:
-                        st.session_state.show_batch_delete = {"key": p_key, "index": b_index, "label": selected_batch_label}
-
-                if "show_batch_delete" in st.session_state and st.session_state.show_batch_delete:
-                    b_del = st.session_state.show_batch_delete
-                    @st.dialog("⚠️ Подтверждение удаления")
-                    def delete_batch_dialog():
-                        st.error(f"Удалить выбранную партию?\n{b_del['label']}")
-                        col_y, col_n = st.columns(2)
-                        if col_y.button("🗑️ Да, удалить", type="primary", use_container_width=True):
-                            data["products"][b_del['key']].pop(b_del['index'])
-                            if not data["products"][b_del['key']]:
-                                del data["products"][b_del['key']]
-                            save_data(data)
-                            st.session_state.show_batch_delete = None
-                            st.success("Удалено!")
-                            st.rerun()
-                        if col_n.button("Отмена", type="secondary", use_container_width=True):
-                            st.session_state.show_batch_delete = None
-                            st.rerun()
-                    delete_batch_dialog()
-
-    st.markdown("---")
-    st.subheader("📋 Текущий остаток на складе")
     
     flat_stock_table = []
     for p_name, batches in data["products"].items():
         if isinstance(batches, list):
             for b in batches:
                 if b["qty"] > 0:
+                    total_qty += b["qty"]
+                    total_cost_sum += b["qty"] * b["cost"]
+                    total_price_sum += b["qty"] * b["price"]
+                    
+                    # Сразу собираем данные для таблицы остатков
                     flat_stock_table.append({
                         "Товар": p_name.capitalize(),
                         "Дата поступления": b["date"],
                         "В наличии (шт)": b["qty"],
-                        "Закупка (1 шт)": f"{b['cost']:,} сом",
-                        "Продажа (1 шт)": f"{b['price']:,} сом",
-                        "Итого стоимость закупки": f"{b['qty'] * b['cost']:,} сом"
+                        "Закупка (1 шт)": b["cost"],
+                        "Продажа (1 шт)": b["price"],
+                        "Итого стоимость закупки": b["qty"] * b["cost"]
                     })
                 
-    if flat_stock_table:
-        df_display = pd.DataFrame(flat_stock_table).sort_values(by=["Товар", "Дата поступления"])
-        st.dataframe(df_display, use_container_width=True)
-    else:
-        st.write("Склад пуст.")
+    # ВОЗВРАЩЕНО: Красивые карточки итогов над таблицей данных
+    st.subheader("📊 Общие итоги по складу")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("📦 Всего товаров в наличии", f"{total_qty} шт.")
+    m2.metric("💰 Общая сумма в закупке", f"{total_cost_sum:,.2f} сом")
+    m3.metric("📈 Потенциальная розничная стоимость", f"{total_price_sum:,.2f} сом")
+        
+    st.markdown("---")
 
-# --- ВКЛАДКА 2: КАССА (ПРОДАЖИ) ---
+    # Переключатель режима для обычной работы или версии для печати
+    print_mode = st.checkbox("🖨️ Режим для печати отчета остатков")
+    
+    if print_mode:
+        st.subheader("📄 ОТЧЕТ ПО ОСТАТКАМ ТОВАРОВ НА СКЛАДЕ")
+        st.write(f"Дата формирования: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+        if flat_stock_table:
+            df_print = pd.DataFrame(flat_stock_table).sort_values(by=["Товар", "Дата поступления"])
+            # Форматируем вывод для печати, чтобы числа выглядели красиво
+            df_print["Закупка (1 шт)"] = df_print["Закупка (1 шт)"].map('{:,.2f} сом'.format)
+            df_print["Продажа (1 шт)"] = df_print["Продажа (1 шт)"].map('{:,.2f} сом'.format)
+            df_print["Итого стоимость закупки"] = df_print["Итого стоимость закупки"].map('{:,.2f} сом'.format)
+            
+            st.table(df_print) # st.table генерирует чистую HTML-таблицу без интерактивных рамок, идеальную для принтера
+            st.markdown(f"**Итого на складе:** {total_qty} шт. на общую сумму закупки **{total_cost_sum:,.2f} сом**")
+            st.info("💡 Нажмите Ctrl + P (или Cmd + P на Mac), чтобы распечатать эту страницу или сохранить её в PDF.")
+        else:
+            st.write("Склад пуст.")
+    else:
+        # ОБЫЧНЫЙ РЕЖИМ (С формами добавления и изменения)
+        st.subheader("📥 Загрузка/Обновление товаров из Excel (.xlsx или .csv)")
+        uploaded_file = st.file_uploader("Выберите файл таблицы", type=["csv", "xlsx"])
+        if uploaded_file is not None:
+            try:
+                if uploaded_file.name.endswith('.xlsx'):
+                    df = pd.read_excel(uploaded_file)
+                else:
+                    try:
+                        df = pd.read_csv(uploaded_file, sep=None, engine='python', encoding='cp1251')
+                    except:
+                        uploaded_file.seek(0)
+                        df = pd.read_csv(uploaded_file, sep=None, engine='python', encoding='utf-8')
+                
+                if df.shape[1] >= 4:
+                    imported_count = 0
+                    today_str = datetime.now().strftime("%Y-%m-%d")
+                    for index, row in df.iterrows():
+                        try:
+                            p_name = str(row.iloc[0]).strip().lower()
+                            if not p_name or p_name == 'nan': continue
+                                
+                            p_qty = int(float(str(row.iloc[1]).strip().replace(' ', '').replace(',', '.')))
+                            p_cost = float(str(row.iloc[2]).strip().replace(' ', '').replace(',', '.'))
+                            p_price = float(str(row.iloc[3]).strip().replace(' ', '').replace(',', '.'))
+                            
+                            save_product_smart(p_name, p_qty, p_cost, p_price, today_str)
+                            imported_count += 1
+                        except: continue
+                    
+                    if imported_count > 0:
+                        save_data(data)
+                        st.success(f"🚀 Склад успешно синхронизирован! Обработано товаров: {imported_count}")
+                        st.rerun()
+            except Exception as e:
+                st.error(f"Не удалось прочитать файл: {e}")
+
+        st.markdown("---")
+        
+        col_add, col_edit = st.columns(2)
+        with col_add:
+            st.subheader("➕ Добавить товар вручную")
+            with st.form("add_form", clear_on_submit=True):
+                name = st.text_input("Название товара").strip().lower()
+                qty = st.number_input("Количество (шт)", min_value=1, value=1)
+                cost = st.number_input("Закупка (себестоимость), сом", min_value=0.0)
+                price = st.number_input("Цена продажи, сом", min_value=0.0)
+                
+                if st.form_submit_button("Сохранить в БД"):
+                    if name:
+                        today_str = datetime.now().strftime("%Y-%m-%d")
+                        save_product_smart(name, qty, cost, price, today_str)
+                        save_data(data)
+                        st.success("Успешно сохранено!")
+                        st.rerun()
+
+        with col_edit:
+            st.subheader("✏️ Редактировать / Удалить партию")
+            if not data["products"]:
+                st.write("На складе еще нет товаров.")
+            else:
+                all_batches_options = {}
+                for p_name, batches in data["products"].items():
+                    if isinstance(batches, list):
+                        for b_idx, b in enumerate(batches):
+                            if b["qty"] > 0:
+                                display_label = f"{p_name.capitalize()} (Приход: {b['date']}) — Остаток: {b['qty']} шт."
+                                all_batches_options[display_label] = (p_name, b_idx)
+                
+                if not all_batches_options:
+                    st.write("Нет активных товаров для изменения.")
+                else:
+                    selected_batch_label = st.selectbox("Выберите запись для изменения", list(all_batches_options.keys()))
+                    p_key, b_index = all_batches_options[selected_batch_label]
+                    current_batch = data["products"][p_key][b_index]
+                    
+                    with st.form("edit_form"):
+                        new_qty = st.number_input("Изменить остаток (шт)", min_value=0, value=int(current_batch["qty"]))
+                        new_cost = st.number_input("Цена закупки, сом", min_value=0.0, value=float(current_batch["cost"]))
+                        new_price = st.number_input("Цена продажи, сом", min_value=0.0, value=float(current_batch["price"]))
+                        
+                        c_btn1, c_btn2 = st.columns(2)
+                        save_changes = c_btn1.form_submit_button("💾 Сохранить изменения")
+                        delete_batch_click = c_btn2.form_submit_button("🗑️ Удалить", type="secondary")
+                        
+                        if save_changes:
+                            data["products"][p_key][b_index] = {
+                                "date": current_batch["date"], "qty": new_qty, "cost": new_cost, "price": new_price
+                            }
+                            save_data(data)
+                            st.success("Данные успешно изменены!")
+                            st.rerun()
+                        
+                        if delete_batch_click:
+                            st.session_state.show_batch_delete = {"key": p_key, "index": b_index, "label": selected_batch_label}
+
+                    if "show_batch_delete" in st.session_state and st.session_state.show_batch_delete:
+                        b_del = st.session_state.show_batch_delete
+                        @st.dialog("⚠️ Подтверждение удаления")
+                        def delete_batch_dialog():
+                            st.error(f"Удалить выбранную партию?\n{b_del['label']}")
+                            col_y, col_n = st.columns(2)
+                            if col_y.button("🗑️ Да, удалить", type="primary", use_container_width=True):
+                                data["products"][b_del['key']].pop(b_del['index'])
+                                if not data["products"][b_del['key']]:
+                                    del data["products"][b_del['key']]
+                                save_data(data)
+                                st.session_state.show_batch_delete = None
+                                st.success("Удалено!")
+                                st.rerun()
+                            if col_n.button("Отмена", type="secondary", use_container_width=True):
+                                st.session_state.show_batch_delete = None
+                                st.rerun()
+                        delete_batch_dialog()
+
+        st.markdown("---")
+        st.subheader("📋 Текущий остаток на складе")
+        if flat_stock_table:
+            df_display = pd.DataFrame(flat_stock_table).sort_values(by=["Товар", "Дата поступления"])
+            # Для интерактивной таблицы добавим форматирование валюты через строки
+            df_display["Закупка (1 шт)"] = df_display["Закупка (1 шт)"].map('{:,.2f} сом'.format)
+            df_display["Продажа (1 шт)"] = df_display["Продажа (1 шт)"].map('{:,.2f} сом'.format)
+            df_display["Итого стоимость закупки"] = df_display["Итого стоимость закупки"].map('{:,.2f} сом'.format)
+            st.dataframe(df_display, use_container_width=True)
+        else:
+            st.write("Склад пуст.")
+
+# --- ВКЛАДКА 2: КАССА ---
 elif menu == "💰 Касса / Продажи":
     st.header("Оформить продажу")
     if not data["products"]:
@@ -311,18 +330,13 @@ elif menu == "💰 Касса / Продажи":
                         st.rerun()
                 confirm_dialog()
 
-# --- НОВАЯ ВКЛАДКА 3: БАЛАНС КАССЫ ---
+# --- ВКЛАДКА 3: БАЛАНС КАССЫ ---
 elif menu == "💵 Баланс Кассы":
     st.header("💵 Состояние кассы магазина")
     
-    # Считаем продажи наличными и рассрочкой
     cash_from_sales = sum(s['total_sale'] for s in data["sales"] if s.get('payment') == 'Наличные')
     credit_from_sales = sum(s['total_sale'] for s in data["sales"] if s.get('payment') == 'Рассрочка')
-    
-    # Считаем ручные операции (инкассация или докладывание денег)
     manual_cash_flow = sum(op['amount'] for op in data.get('cash_operations', []))
-    
-    # Итого чистых наличных в кассе прямо сейчас
     current_cash_in_hand = cash_from_sales + manual_cash_flow
     
     c1, c2, c3 = st.columns(3)
@@ -332,12 +346,11 @@ elif menu == "💵 Баланс Кассы":
     
     st.markdown("---")
     
-    # Форма внесения/изъятия денег
     st.subheader("📥 / 📤 Внести или взять деньги из кассы")
     with st.form("cash_op_form", clear_on_submit=True):
         op_type = st.selectbox("Тип операции", ["Взять деньги (Инкассация/Личные нужды)", "Положить деньги (Пополнение кассы/Сдача)"])
         op_amount = st.number_input("Сумма, сом", min_value=1.0, value=100.0)
-        op_comment = st.text_input("Комментарий / Причина", placeholder="Например: взял на обед, доложил для сдачи")
+        op_comment = st.text_input("Комментарий / Причина")
         
         if st.form_submit_button("Выполнить операцию"):
             actual_amount = -op_amount if "Взять" in op_type else op_amount
