@@ -2,7 +2,6 @@ import streamlit as st
 import json
 import os
 import pandas as pd
-import csv
 from datetime import datetime
 
 # Файл базы данных
@@ -43,54 +42,51 @@ def save_product_to_dict(name, qty, cost, price):
 if menu == "📦 Склад / Поступление":
     st.header("Управление товарами")
     
-    # 1. МАССОВАЯ ЗАГРУЗКА
+    # 1. СУПЕР-НАДЕЖНАЯ ЗАГРУЗКА ИЗ EXCEL / CSV
     st.subheader("📥 Массовая загрузка товаров из Excel (CSV)")
-    st.info("Инструкция: создайте Excel с 4 колонками (Название, Кол-во, Закупка, Продажа) и сохраните как CSV.")
+    st.info("Создайте Excel с 4 колонками (Название, Кол-во, Закупка, Продажа). Первая строка — заголовки.")
     
     uploaded_file = st.file_uploader("Выберите ваш файл .csv", type=["csv"])
     if uploaded_file is not None:
         try:
-            raw_bytes = uploaded_file.getvalue()
-            file_contents = ""
-            for encoding in ("utf-8-sig", "cp1251", "utf-8"):
-                try:
-                    file_contents = raw_bytes.decode(encoding)
-                    break
-                except UnicodeDecodeError:
-                    continue
+            # Читаем файл через Pandas, который автоматически определяет разделители и кодировки
+            df = pd.read_csv(uploaded_file, sep=None, engine='python')
             
-            if not file_contents:
-                st.error("Не удалось определить кодировку файла.")
-            else:
-                lines = file_contents.splitlines()
-                delimiter = ';' if ';' in lines[0] else ','
-                reader = csv.reader(lines, delimiter=delimiter)
-                
+            # Если колонок больше или меньше, берем первые 4
+            if df.shape[1] >= 4:
                 imported_count = 0
-                for row in reader:
-                    if not row or len(row) < 4: continue
-                    if any(x in row[0].lower() for x in ["название", "товар", "наименование"]): continue
-                    
+                for index, row in df.iterrows():
                     try:
-                        p_name = row[0].strip().lower()
-                        p_qty = int(float(row[1].strip().replace(',', '.')))
-                        p_cost = float(row[2].strip().replace(',', '.'))
-                        p_price = float(row[3].strip().replace(',', '.'))
-                        if p_name:
-                            save_product_to_dict(p_name, p_qty, p_cost, p_price)
-                            imported_count += 1
-                    except: continue
+                        p_name = str(row.iloc[0]).strip().lower()
+                        
+                        # Защита от пустых строк
+                        if not p_name or p_name == 'nan':
+                            continue
+                            
+                        # Чистим числа от возможных запятых в Excel
+                        p_qty = int(float(str(row.iloc[1]).replace(',', '.')))
+                        p_cost = float(str(row.iloc[2]).replace(',', '.'))
+                        p_price = float(str(row.iloc[3]).replace(',', '.'))
+                        
+                        save_product_to_dict(p_name, p_qty, p_cost, p_price)
+                        imported_count += 1
+                    except:
+                        continue
                 
                 if imported_count > 0:
                     save_data(data)
-                    st.success(f"Загружено товаров: {imported_count}!")
+                    st.success(f"🚀 Успешно загружено и обновлено товаров: {imported_count}!")
                     st.rerun()
+                else:
+                    st.error("В файле не найдено строк с правильными данными.")
+            else:
+                st.error("В вашей таблице должно быть как минимум 4 колонки!")
         except Exception as e:
-            st.error(f"Ошибка чтения: {e}")
+            st.error(f"Не удалось прочитать файл. Ошибка: {e}")
 
-    st.markdown("---") # Разделитель
+    st.markdown("---")
     
-    # 2. РУЧНОЙ ВВОД И РЕДАКТИРОВАНИЕ (ДВЕ КОЛОНКИ)
+    # 2. РУЧНОЙ ВВОД И РЕДАКТИРОВАНИЕ
     col_add, col_edit = st.columns(2)
     
     with col_add:
@@ -112,16 +108,12 @@ if menu == "📦 Склад / Поступление":
         if not data["products"]:
             st.write("На складе еще нет товаров для изменения.")
         else:
-            # Выбираем товар для редактирования
             edit_list = {n.capitalize(): n for n in data["products"].keys()}
             selected_edit_display = st.selectbox("Выберите товар для изменения", list(edit_list.keys()))
             selected_edit_key = edit_list[selected_edit_display]
-            
-            # Получаем текущие данные товара
             current_prod = data["products"][selected_edit_key]
             
             with st.form("edit_form"):
-                # Поля предзаполнены текущими значениями
                 new_qty = st.number_input("Изменить остаток (шт)", min_value=0, value=int(current_prod["qty"]))
                 new_cost = st.number_input("Новая цена закупки", min_value=0.0, value=float(current_prod["cost"]))
                 new_price = st.number_input("Новая цена продажи", min_value=0.0, value=float(current_prod["price"]))
@@ -131,11 +123,7 @@ if menu == "📦 Склад / Поступление":
                 delete_prod = c_btn2.form_submit_button("🗑️ Удалить товар", type="secondary")
                 
                 if save_changes:
-                    data["products"][selected_edit_key] = {
-                        "qty": new_qty,
-                        "cost": new_cost,
-                        "price": new_price
-                    }
+                    data["products"][selected_edit_key] = {"qty": new_qty, "cost": new_cost, "price": new_price}
                     save_data(data)
                     st.success(f"Товар '{selected_edit_display}' обновлен!")
                     st.rerun()
