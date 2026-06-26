@@ -10,13 +10,24 @@ DB_FILE = "sklad_data.json"
 def load_data():
     if os.path.exists(DB_FILE):
         with open(DB_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            try:
+                loaded = json.load(f)
+                # ЗАЩИТА: Проверяем, переведены ли продукты на партионный формат (должен быть список [])
+                # Если структура старая, принудительно сбрасываем базу, чтобы избежать ошибки TypeError
+                if "products" in loaded and loaded["products"]:
+                    first_item = next(iter(loaded["products"].values()))
+                    if not isinstance(first_item, list):
+                        return {"products": {}, "sales": []}
+                return loaded
+            except:
+                return {"products": {}, "sales": []}
     return {"products": {}, "sales": []}
 
 def save_data(data):
     with open(DB_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
+# Инициализируем сессию со встроенной защитой
 if "data" not in st.session_state:
     st.session_state.data = load_data()
 
@@ -27,12 +38,20 @@ st.title("🏬 Магазин «Сулайман-Тоо» — Партионны
 
 menu = st.sidebar.radio("Разделы", ["📦 Склад / Поступление", "💰 Касса / Продажи", "📊 Отчеты по дням"])
 
-# Функция для сохранения товара с учетом уникальной даты оприходования
+# Кнопка безопасной очистки на случай ручного сброса
+st.sidebar.markdown("---")
+st.sidebar.subheader("Настройки системы")
+if st.sidebar.button("⚠️ Сбросить и очистить базу", type="secondary"):
+    data = {"products": {}, "sales": []}
+    st.session_state.data = data
+    save_data(data)
+    st.sidebar.success("База данных очищена!")
+    st.rerun()
+
 def save_product_to_dict(name, qty, cost, price, date_str):
     if name not in data["products"]:
         data["products"][name] = []
     
-    # Ищем, нет ли уже в этот же день поступления этого товара с такими же ценами
     found = False
     for batch in data["products"][name]:
         if batch["date"] == date_str and batch["cost"] == cost and batch["price"] == price:
@@ -52,17 +71,18 @@ def save_product_to_dict(name, qty, cost, price, date_str):
 if menu == "📦 Склад / Поступление":
     st.header("Управление товарами и партиями")
     
-    # Подсчет итогов по всем активным партиям
     total_qty = 0
     total_cost_sum = 0.0
     total_price_sum = 0.0
     
-    for name, batches in data["products"].items():
-        for b in batches:
-            if b["qty"] > 0:
-                total_qty += b["qty"]
-                total_cost_sum += b["qty"] * b["cost"]
-                total_price_sum += b["qty"] * b["price"]
+    if "products" in data:
+        for name, batches in data["products"].items():
+            if isinstance(batches, list): # Дополнительная проверка безопасности
+                for b in batches:
+                    if b["qty"] > 0:
+                        total_qty += b["qty"]
+                        total_cost_sum += b["qty"] * b["cost"]
+                        total_price_sum += b["qty"] * b["price"]
                 
     st.subheader("📊 Общие итоги по складу (все партии)")
     if total_qty > 0:
@@ -76,7 +96,6 @@ if menu == "📦 Склад / Поступление":
     st.markdown("---")
 
     st.subheader("📥 Массовая загрузка товаров из Excel (.xlsx или .csv)")
-    st.write("При импорте файлу автоматически присвоится сегодняшняя дата оприходования.")
     uploaded_file = st.file_uploader("Выберите ваш файл таблицы", type=["csv", "xlsx"])
     if uploaded_file is not None:
         try:
@@ -122,7 +141,6 @@ if menu == "📦 Склад / Поступление":
             qty = st.number_input("Количество (шт)", min_value=1, value=1)
             cost = st.number_input("Закупка (себестоимость)", min_value=0.0)
             price = st.number_input("Цена продажи", min_value=0.0)
-            # НОВОЕ: выбор даты оприходования вручную
             incoming_date = st.date_input("Дата оприходования", value=datetime.now().date())
             
             if st.form_submit_button("Добавить на склад"):
@@ -138,13 +156,13 @@ if menu == "📦 Склад / Поступление":
         if not data["products"]:
             st.write("На складе еще нет товаров.")
         else:
-            # Формируем список всех существующих партий для выбора
             all_batches_options = {}
             for p_name, batches in data["products"].items():
-                for b_idx, b in enumerate(batches):
-                    if b["qty"] > 0:
-                        display_label = f"{p_name.capitalize()} (Приход от {b['date']}) — Остаток: {b['qty']} шт."
-                        all_batches_options[display_label] = (p_name, b_idx)
+                if isinstance(batches, list):
+                    for b_idx, b in enumerate(batches):
+                        if b["qty"] > 0:
+                            display_label = f"{p_name.capitalize()} (Приход от {b['date']}) — Остаток: {b['qty']} шт."
+                            all_batches_options[display_label] = (p_name, b_idx)
             
             if not all_batches_options:
                 st.write("Нет активных партий для изменения.")
@@ -197,16 +215,17 @@ if menu == "📦 Склад / Поступление":
     
     flat_stock_table = []
     for p_name, batches in data["products"].items():
-        for b in batches:
-            if b["qty"] > 0:
-                flat_stock_table.append({
-                    "Товар": p_name.capitalize(),
-                    "Дата оприходования": b["date"],
-                    "Остаток партии": b["qty"],
-                    "Закупка (шт)": b["cost"],
-                    "Продажа (шт)": b["price"],
-                    "Сумма партии (закупка)": b["qty"] * b["cost"]
-                })
+        if isinstance(batches, list):
+            for b in batches:
+                if b["qty"] > 0:
+                    flat_stock_table.append({
+                        "Товар": p_name.capitalize(),
+                        "Дата оприходования": b["date"],
+                        "Остаток партии": b["qty"],
+                        "Закупка (шт)": b["cost"],
+                        "Продажа (шт)": b["price"],
+                        "Сумма партии (закупка)": b["qty"] * b["cost"]
+                    })
                 
     if flat_stock_table:
         df_display = pd.DataFrame(flat_stock_table).sort_values(by=["Товар", "Дата оприходования"])
@@ -214,16 +233,15 @@ if menu == "📦 Склад / Поступление":
     else:
         st.write("Склад пуст.")
 
-# --- ВКЛАДКА 2: КАССА (С ВЫБОРОМ ПАРТИИ) ---
+# --- ВКЛАДКА 2: КАССА ---
 elif menu == "💰 Касса / Продажи":
     st.header("Оформить продажу")
     if not data["products"]:
         st.warning("Сначала добавьте товары на склад.")
     else:
-        # Находим товары, у которых есть хотя бы одна живая партия
         available_product_names = []
         for p_name, batches in data["products"].items():
-            if any(b["qty"] > 0 for b in batches):
+            if isinstance(batches, list) and any(b["qty"] > 0 for b in batches):
                 available_product_names.append(p_name.capitalize())
                 
         if not available_product_names:
@@ -232,7 +250,6 @@ elif menu == "💰 Касса / Продажи":
             sel_display = st.selectbox("🔍 Начните вводить название товара для поиска", sorted(available_product_names))
             p_key = sel_display.lower()
             
-            # Выбираем партию конкретного товара
             batches_options = {}
             for b_idx, b in enumerate(data["products"][p_key]):
                 if b["qty"] > 0:
@@ -266,7 +283,6 @@ elif menu == "💰 Касса / Продажи":
                     
                     col_yes, col_no = st.columns(2)
                     if col_yes.button("✅ Да, всё верно", type="primary", use_container_width=True):
-                        # Списываем именно из выбранной партии
                         data["products"][conf['p_key']][conf['b_index']]["qty"] -= conf['qty']
                         t_cost = conf['qty'] * data["products"][conf['p_key']][conf['b_index']]["cost"]
                         
@@ -360,7 +376,6 @@ elif menu == "📊 Отчеты по дням":
                 def delete_sale_dialog():
                     st.error("Вы уверены, что хотите ОТМЕНИТЬ эту продажу?")
                     st.markdown(f"**Операция:** {s_del['name']} | Количество: {s_del['qty']} шт.")
-                    st.info("💡 Товар вернется именно в ту партию, из которой был продан.")
                     
                     col_y, col_n = st.columns(2)
                     if col_y.button("🔥 Да, отменить", type="primary", use_container_width=True):
@@ -370,7 +385,6 @@ elif menu == "📊 Отчеты по дням":
                         p_pure = sale_item.get("pure_name", None)
                         b_date = sale_item.get("batch_date", None)
                         
-                        # Возвращаем товар в родную партию по дате
                         if p_pure and b_date:
                             if p_pure in data["products"]:
                                 batch_found = False
@@ -380,7 +394,6 @@ elif menu == "📊 Отчеты по дням":
                                         batch_found = True
                                         break
                                 if not batch_found:
-                                    # Если партию успели вручную стереть, восстанавливаем её
                                     single_cost = sale_item["total_cost"] / sale_item["qty"]
                                     single_price = sale_item["total_sale"] / sale_item["qty"]
                                     data["products"][p_pure].append({"date": b_date, "qty": sale_item["qty"], "cost": single_cost, "price": single_price})
