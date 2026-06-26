@@ -43,43 +43,58 @@ def save_product_to_dict(name, qty, cost, price):
 if menu == "📦 Склад / Поступление":
     st.header("Управление товарами")
     
-    # СДЕЛАЛ ИМПОРТ ГЛАВНЫМ БЛОКОМ (не в спойлере)
+    # 1. МАССОВАЯ ЗАГРУЗКА
     st.subheader("📥 Массовая загрузка товаров из Excel (CSV)")
     st.info("Инструкция: создайте Excel с 4 колонками (Название, Кол-во, Закупка, Продажа) и сохраните как CSV.")
     
     uploaded_file = st.file_uploader("Выберите ваш файл .csv", type=["csv"])
     if uploaded_file is not None:
         try:
-            file_contents = uploaded_file.getvalue().decode("utf-8-sig")
-            lines = file_contents.splitlines()
-            delimiter = ';' if ';' in lines[0] else ','
-            reader = csv.reader(lines, delimiter=delimiter)
-            
-            imported_count = 0
-            for row in reader:
-                if not row or len(row) < 4: continue
-                if any(x in row[0].lower() for x in ["название", "товар", "наименование"]): continue
-                
+            raw_bytes = uploaded_file.getvalue()
+            file_contents = ""
+            for encoding in ("utf-8-sig", "cp1251", "utf-8"):
                 try:
-                    p_name = row[0].strip().lower()
-                    p_qty = int(float(row[1].strip().replace(',', '.')))
-                    p_cost = float(row[2].strip().replace(',', '.'))
-                    p_price = float(row[3].strip().replace(',', '.'))
-                    if p_name:
-                        save_product_to_dict(p_name, p_qty, p_cost, p_price)
-                        imported_count += 1
-                except: continue
+                    file_contents = raw_bytes.decode(encoding)
+                    break
+                except UnicodeDecodeError:
+                    continue
             
-            if imported_count > 0:
-                save_data(data)
-                st.success(f"Загружено товаров: {imported_count}!")
-                st.rerun()
+            if not file_contents:
+                st.error("Не удалось определить кодировку файла.")
+            else:
+                lines = file_contents.splitlines()
+                delimiter = ';' if ';' in lines[0] else ','
+                reader = csv.reader(lines, delimiter=delimiter)
+                
+                imported_count = 0
+                for row in reader:
+                    if not row or len(row) < 4: continue
+                    if any(x in row[0].lower() for x in ["название", "товар", "наименование"]): continue
+                    
+                    try:
+                        p_name = row[0].strip().lower()
+                        p_qty = int(float(row[1].strip().replace(',', '.')))
+                        p_cost = float(row[2].strip().replace(',', '.'))
+                        p_price = float(row[3].strip().replace(',', '.'))
+                        if p_name:
+                            save_product_to_dict(p_name, p_qty, p_cost, p_price)
+                            imported_count += 1
+                    except: continue
+                
+                if imported_count > 0:
+                    save_data(data)
+                    st.success(f"Загружено товаров: {imported_count}!")
+                    st.rerun()
         except Exception as e:
             st.error(f"Ошибка чтения: {e}")
 
     st.markdown("---") # Разделитель
     
-    with st.expander("➕ Добавить один товар вручную"):
+    # 2. РУЧНОЙ ВВОД И РЕДАКТИРОВАНИЕ (ДВЕ КОЛОНКИ)
+    col_add, col_edit = st.columns(2)
+    
+    with col_add:
+        st.subheader("➕ Добавить один товар вручную")
         with st.form("add_form", clear_on_submit=True):
             name = st.text_input("Название товара").strip().lower()
             qty = st.number_input("Количество (шт)", min_value=1, value=1)
@@ -92,6 +107,48 @@ if menu == "📦 Склад / Поступление":
                     st.success("Добавлено!")
                     st.rerun()
 
+    with col_edit:
+        st.subheader("✏️ Редактировать / Удалить товар")
+        if not data["products"]:
+            st.write("На складе еще нет товаров для изменения.")
+        else:
+            # Выбираем товар для редактирования
+            edit_list = {n.capitalize(): n for n in data["products"].keys()}
+            selected_edit_display = st.selectbox("Выберите товар для изменения", list(edit_list.keys()))
+            selected_edit_key = edit_list[selected_edit_display]
+            
+            # Получаем текущие данные товара
+            current_prod = data["products"][selected_edit_key]
+            
+            with st.form("edit_form"):
+                # Поля предзаполнены текущими значениями
+                new_qty = st.number_input("Изменить остаток (шт)", min_value=0, value=int(current_prod["qty"]))
+                new_cost = st.number_input("Новая цена закупки", min_value=0.0, value=float(current_prod["cost"]))
+                new_price = st.number_input("Новая цена продажи", min_value=0.0, value=float(current_prod["price"]))
+                
+                c_btn1, c_btn2 = st.columns(2)
+                save_changes = c_btn1.form_submit_button("💾 Сохранить")
+                delete_prod = c_btn2.form_submit_button("🗑️ Удалить товар", type="secondary")
+                
+                if save_changes:
+                    data["products"][selected_edit_key] = {
+                        "qty": new_qty,
+                        "cost": new_cost,
+                        "price": new_price
+                    }
+                    save_data(data)
+                    st.success(f"Товар '{selected_edit_display}' обновлен!")
+                    st.rerun()
+                    
+                if delete_prod:
+                    del data["products"][selected_edit_key]
+                    save_data(data)
+                    st.warning(f"Товар '{selected_edit_display}' удален со склада.")
+                    st.rerun()
+
+    st.markdown("---")
+
+    # 3. ТАБЛИЦА ОСТАТКОВ
     st.subheader("📋 Список всех товаров на складе")
     if data["products"]:
         stock_table = []
@@ -105,7 +162,7 @@ if menu == "📦 Склад / Поступление":
     else:
         st.write("Склад пока пуст.")
 
-# --- ОСТАЛЬНЫЕ ВКЛАДКИ ---
+# --- ОСТАЛЬНЫЕ ВКЛАДКИ (КАССА И ОТЧЕТЫ) ---
 elif menu == "💰 Касса / Продажи":
     st.header("Оформить продажу")
     if not data["products"]:
