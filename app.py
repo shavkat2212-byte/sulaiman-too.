@@ -50,6 +50,26 @@ def save_product_to_dict(name, qty, cost, price):
 if menu == "📦 Склад / Поступление":
     st.header("Управление товарами")
     
+    # ФИКС: Показываем только те товары, у которых остаток больше 0
+    active_products = {n: info for n, info in data["products"].items() if info["qty"] > 0}
+    
+    # НОВОЕ: Отображение общих итогов над данными в виде карточек
+    st.subheader("📊 Общие итоги по складу")
+    if active_products:
+        total_qty = sum(info["qty"] for info in active_products.values())
+        total_cost_sum = sum(info["qty"] * info["cost"] for info in active_products.values())
+        total_price_sum = sum(info["qty"] * info["price"] for info in active_products.values())
+        
+        m1, m2, m3 = st.columns(3)
+        m1.metric("📦 Всего товаров на складе", f"{total_qty} шт.")
+        m2.metric("💰 Общая сумма в закупке", f"{total_cost_sum:,.2f} руб.")
+        m3.metric("📈 Потенциальная выручка (в продажах)", f"{total_price_sum:,.2f} руб.")
+    else:
+        st.info("Склад пуст, итоговые показатели появятся после загрузки товаров.")
+        
+    st.markdown("---")
+
+    # 1. МАССОВАЯ ЗАГРУЗКА
     st.subheader("📥 Массовая загрузка товаров из Excel (.xlsx или .csv)")
     uploaded_file = st.file_uploader("Выберите ваш файл таблицы", type=["csv", "xlsx"])
     if uploaded_file is not None:
@@ -134,10 +154,6 @@ if menu == "📦 Склад / Поступление":
 
     st.markdown("---")
     st.subheader("📋 Список всех товаров на складе")
-    
-    # ИСПРАВЛЕНО: Показываем только те товары, у которых остаток больше 0
-    active_products = {n: info for n, info in data["products"].items() if info["qty"] > 0}
-    
     if active_products:
         stock_table = []
         for n, info in active_products.items():
@@ -150,35 +166,56 @@ if menu == "📦 Склад / Поступление":
     else:
         st.write("Склад пуст или все товары распроданы.")
 
-# --- ВКЛАДКА 2: КАССА ---
+# --- ВКЛАДКА 2: КАССА (ОБНОВЛЕННАЯ) ---
 elif menu == "💰 Касса / Продажи":
     st.header("Оформить продажу")
     if not data["products"]:
         st.warning("Сначала добавьте товары на склад.")
     else:
+        # Берем только те товары, которые реально есть в наличии
         plist = {n.capitalize(): n for n, i in data["products"].items() if i["qty"] > 0}
         if not plist:
             st.error("Нет товаров в наличии!")
         else:
-            sel_display = st.selectbox("Товар", list(plist.keys()))
+            # ИСПРАВЛЕНО: Теперь поиск встроен прямо в выпадающий список (selectbox в Streamlit поддерживает ввод текста для поиска)
+            sel_display = st.selectbox("🔍 Начните вводить название товара для поиска", list(plist.keys()))
             sel_key = plist[sel_display]
             prod = data["products"][sel_key]
-            st.write(f"Цена: {prod['price']} | Остаток: {prod['qty']}")
-            sqty = st.number_input("Количество", min_value=1, max_value=int(prod["qty"]), value=1)
-            if st.button("💵 Продать", type="primary"):
-                data["products"][sel_key]["qty"] -= sqty
-                t_sale, t_cost = sqty * prod["price"], sqty * prod["cost"]
-                data["sales"].append({
-                    "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "day": datetime.now().strftime("%Y-%m-%d"),
-                    "name": sel_display, "qty": sqty,
-                    "total_sale": t_sale, "total_cost": t_cost, "profit": t_sale - t_cost
-                })
-                save_data(data)
-                st.success(f"Продано на {t_sale}!")
-                st.rerun()
+            
+            st.info(f"📋 Справочно из базы данных — Стандартная розничная цена: **{prod['price']} руб.** | Остаток: **{prod['qty']} шт.**")
+            
+            # Форма оформления продажи
+            with st.form("sale_form"):
+                sqty = st.number_input("Количество для продажи (шт)", min_value=1, max_value=int(prod["qty"]), value=1)
+                
+                # НОВОЕ: Возможность вписать индивидуальную цену продажи вручную
+                custom_price = st.number_input("💰 Фактическая цена продажи за 1 шт (можно изменить)", min_value=0.0, value=float(prod['price']))
+                
+                # НОВОЕ: Выбор типа оплаты
+                pay_method = st.radio("💳 Способ оплаты", ["Наличные", "Рассрочка"], horizontal=True)
+                
+                btn_sell = st.form_submit_button("💵 Подтвердить и продать", type="primary")
+                
+                if btn_sell:
+                    data["products"][sel_key]["qty"] -= sqty
+                    t_sale = sqty * custom_price
+                    t_cost = sqty * prod["cost"]  # Себестоимость берется фиксированная из базы
+                    
+                    data["sales"].append({
+                        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "day": datetime.now().strftime("%Y-%m-%d"),
+                        "name": sel_display, 
+                        "qty": sqty,
+                        "total_sale": t_sale, 
+                        "total_cost": t_cost, 
+                        "profit": t_sale - t_cost,
+                        "payment": pay_method  # Сохраняем тип оплаты
+                    })
+                    save_data(data)
+                    st.success(f"Продано! Товар: {sel_display} ({sqty} шт.) на сумму {t_sale} руб. Метод: {pay_method}")
+                    st.rerun()
 
-# --- ВКЛАДКА 3: ОТЧЕТЫ С ФИЛЬТРОМ ДАТ ---
+# --- ВКЛАДКА 3: ОТЧЕТЫ С ТИПОМ ОПЛАТЫ ---
 elif menu == "📊 Отчеты по дням":
     st.header("Аналитика и история продаж")
     if not data["sales"]:
@@ -187,12 +224,10 @@ elif menu == "📊 Отчеты по дням":
         df = pd.DataFrame(data["sales"])
         df['day'] = pd.to_datetime(df['day']).dt.date
         
-        # Инструмент выбора диапазона дат
         st.subheader("🔍 Выберите период для просмотра отчета")
         today = datetime.now().date()
         date_range = st.date_input("Диапазон дат", value=(today, today))
         
-        # Фильтрация данных по выбранным датам
         if isinstance(date_range, tuple) and len(date_range) == 2:
             start_date, end_date = date_range
             filtered_df = df[(df['day'] >= start_date) & (df['day'] <= end_date)]
@@ -204,12 +239,27 @@ elif menu == "📊 Отчеты по дням":
         else:
             c1, c2 = st.columns(2)
             c1.metric("💰 Выручка за период", f"{filtered_df['total_sale'].sum():,.2f} руб.")
-            c2.metric("📈 Прибыль за период", f"{filtered_df['profit'].sum():,.2f} text руб.")
+            c2.metric("📈 Чистая прибыль за период", f"{filtered_df['profit'].sum():,.2f} руб.")
+            
+            # Дополнительное отображение по типам оплаты, если колонка существует
+            if "payment" in filtered_df.columns:
+                st.subheader("💳 Разделение по типам оплаты за период")
+                p1, p2 = st.columns(2)
+                cash_sum = filtered_df[filtered_df['payment'] == 'Наличные']['total_sale'].sum()
+                credit_sum = filtered_df[filtered_df['payment'] == 'Рассрочка']['total_sale'].sum()
+                p1.metric("💵 Наличными", f"{cash_sum:,.2f} руб.")
+                p2.metric("📝 В рассрочку", f"{credit_sum:,.2f} руб.")
             
             st.subheader("📋 Детальный список проданных товаров")
-            display_df = filtered_df.rename(columns={
+            
+            # Переименовываем колонки для красивого вывода
+            rename_dict = {
                 "date": "Дата/Время", "day": "Дата", "name": "Товар", 
                 "qty": "Кол-во (шт)", "total_sale": "Сумма продажи", 
                 "total_cost": "Себестоимость", "profit": "Прибыль"
-            })
+            }
+            if "payment" in filtered_df.columns:
+                rename_dict["payment"] = "Тип оплаты"
+                
+            display_df = filtered_df.rename(columns=rename_dict)
             st.dataframe(display_df.sort_values(by="Дата/Время", ascending=False), use_container_width=True)
