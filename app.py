@@ -33,9 +33,9 @@ if "data" not in st.session_state:
 data = st.session_state.data
 
 st.set_page_config(page_title="Магазин Сулайман-Тоо", layout="wide", page_icon="🏬")
-st.title("🏬 Магазин «Сулайман-Тоо» — Учет")
+st.title("🏬 Магазин «Сулайман-Тоо» — Система Учета")
 
-# ==================== БОКОВАЯ ПАНЕЛЬ ====================
+# ==================== БОКОВАЯ ПАНЕЛЬ (КНОПКА ОЧИСТКИ СУДА УБРАНА) ====================
 menu = st.sidebar.radio("Разделы", [
     "📦 Склад / Поступление", 
     "💰 Касса / Продажи", 
@@ -45,13 +45,7 @@ menu = st.sidebar.radio("Разделы", [
 ])
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("Настройки системы")
-if st.sidebar.button("⚠️ Перезагрузить базу (Очистить)", type="secondary"):
-    data = {"products": {}, "sales": [], "cash_operations": [], "supplier_payments": []}
-    st.session_state.data = data
-    save_data(data)
-    st.sidebar.success("База данных успешно очищена!")
-    st.rerun()
+st.sidebar.caption("Магазин Сулайман-Тоо • v3.8")
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 def get_flat_stock():
@@ -267,7 +261,6 @@ elif menu == "💰 Касса / Продажи":
             custom_price = st.number_input("💰 Цена продажи за 1 шт (можно изменить), сом", min_value=0.0, value=float(chosen_batch['price']))
             pay_method = st.radio("💳 Способ оплаты", ["Наличные", "Рассрочка"], horizontal=True)
             
-            # ИСПРАВЛЕНО: Добавлено поле первоначального взноса, если выбрана Рассрочка
             down_payment = 0.0
             total_sale_sum = sqty * custom_price
             
@@ -293,7 +286,6 @@ elif menu == "💰 Касса / Продажи":
                     st.markdown(f"**Количество:** {conf['qty']} шт. | **Цена за шт:** {conf['price']:.2f} сом")
                     st.markdown(f"### Общая сумма сделки: {conf['total']:.2f} сом")
                     
-                    # ИСПРАВЛЕНО: Динамическое окно с расчетом взноса и остатка рассрочки
                     if conf['payment'] == "Рассрочка":
                         st.markdown(f"**Способ оплаты:** 📝 Рассрочка")
                         st.markdown(f"👉 **Вносится наличными сейчас:** {conf['down_payment']:.2f} сом")
@@ -321,8 +313,8 @@ elif menu == "💰 Касса / Продажи":
                             "total_cost": t_cost, 
                             "profit": conf['total'] - t_cost, 
                             "payment": conf['payment'],
-                            "down_payment": conf['down_payment'],   # Сохраняем взнос
-                            "credit_balance": conf['credit_balance'] # Сохраняем долг
+                            "down_payment": conf['down_payment'],
+                            "credit_balance": conf['credit_balance']
                         })
                         save_data(data)
                         st.session_state.show_confirmation = None
@@ -337,11 +329,8 @@ elif menu == "💰 Касса / Продажи":
 elif menu == "💵 Баланс Кассы":
     st.header("💵 Состояние кассы магазина")
     
-    # ИСПРАВЛЕНО: Наличные с продаж теперь считают ПОЛНЫЙ НАЛ + ПЕРВОНАЧАЛЬНЫЕ ВЗНОСЫ из рассрочек
     full_cash_sales = sum(s["total_sale"] for s in data["sales"] if s.get("payment") == "Наличные")
     down_payments_cash = sum(s.get("down_payment", 0.0) for s in data["sales"] if s.get("payment") == "Рассрочка")
-    
-    # Чистый остаток рассрочки (то, что нам должны)
     credit_debts = sum(s.get("credit_balance", s["total_sale"] if s.get("payment") == "Рассрочка" else 0.0) for s in data["sales"])
     
     manual_cash_flow = sum(op['amount'] for op in data.get('cash_operations', []))
@@ -386,7 +375,7 @@ elif menu == "💵 Баланс Кассы":
             })
         st.dataframe(pd.DataFrame(op_list), use_container_width=True)
 
-# ==================== ВКЛАДКА 4: ОТЧЕТЫ ====================
+# ==================== ВКЛАДКА 4: ОТЧЕТЫ (ДОБАВЛЕНО РЕДАКТИРОВАНИЕ) ====================
 elif menu == "📊 Отчеты по дням":
     st.header("Аналитика и история продаж")
     if not data["sales"]:
@@ -419,73 +408,88 @@ elif menu == "📊 Отчеты по дням":
                                    file_name=f"report_{datetime.now().strftime('%Y%m%d')}.xlsx")
 
             st.markdown("---")
-            st.subheader("📋 Детализация продаж по типам оплаты")
-            tab1, tab2, tab3 = st.tabs(["Все продажи", "💵 Наличные", "📝 Рассрочка"])
             
-            # ИСПРАВЛЕНО: Функция рендеринга адаптирована под показ первоначального взноса и долга
-            def render_sales_table_with_actions(dataframe, tab_name):
-                if dataframe.empty:
-                    st.write("Нет операций за этот период.")
-                    return
+            # НОВОЕ: БЛОК РЕДАКТИРОВАНИЯ И УДАЛЕНИЯ ПРОДАЖ
+            st.subheader("✏️ Редактировать или Отменить продажу из детализации")
+            sales_options = {}
+            for idx, s in enumerate(data["sales"]):
+                label = f"[{s['date']}] {s['name'].capitalize()} — {s['qty']}шт × {s['total_sale']/s['qty']:.0f} сом = {s['total_sale']:.0f} сом ({s['payment']})"
+                sales_options[label] = idx
+            
+            selected_sale_label = st.selectbox("Выберите операцию из списка для исправления/удаления", list(sales_options.keys()))
+            target_sale_idx = sales_options[selected_sale_label]
+            sale_to_edit = data["sales"][target_sale_idx]
+            
+            # Форма редактирования продажи
+            with st.form("edit_sale_form"):
+                col_e1, col_e2, col_e3, col_e4 = st.columns(4)
                 
-                # Заголовки для таблиц
-                if tab_name == "credit":
-                    h1, h2, h3, h4, h5, h6, h7 = st.columns([1.5, 2, 0.8, 1.2, 1.2, 1.2, 1])
-                    h1.markdown("**Дата/Время**")
-                    h2.markdown("**Товар**")
-                    h3.markdown("**Кол-во**")
-                    h4.markdown("**Итого цена**")
-                    h5.markdown("**Перв. взнос**")
-                    h6.markdown("**Остаток долга**")
-                    h7.markdown("**Действие**")
-                else:
-                    h1, h2, h3, h4, h5, h6 = st.columns([2, 2.5, 0.8, 1.5, 1.2, 1])
-                    h1.markdown("**Дата/Время**")
-                    h2.markdown("**Товар (Партия)**")
-                    h3.markdown("**Кол-во**")
-                    h4.markdown("**Сумма**")
-                    h5.markdown("**Тип оплаты**")
-                    h6.markdown("**Действие**")
-                st.markdown("---")
+                # Подтягиваем старые параметры
+                old_qty = int(sale_to_edit["qty"])
+                old_price_one = float(sale_to_edit["total_sale"] / old_qty)
                 
-                for idx, row in dataframe.iloc[::-1].iterrows():
-                    if tab_name == "credit":
-                        r1, r2, r3, r4, r5, r6, r7 = st.columns([1.5, 2, 0.8, 1.2, 1.2, 1.2, 1])
-                        r1.write(row['date'])
-                        r2.write(str(row['name']))
-                        r3.write(f"{row['qty']} шт.")
-                        r4.write(f"{row['total_sale']:.2f} c.")
-                        r5.write(f"{row.get('down_payment', 0.0):.2f} c.")
-                        r6.write(f"{row.get('credit_balance', row['total_sale']):.2f} c.")
-                        action_col = r7
-                    else:
-                        r1, r2, r3, r4, r5, r6 = st.columns([2, 2.5, 0.8, 1.5, 1.2, 1])
-                        r1.write(row['date'])
-                        r2.write(str(row['name']))
-                        r3.write(f"{row['qty']} шт.")
-                        r4.write(f"{row['total_sale']:.2f} c.")
-                        r5.write(row.get('payment', 'Наличные'))
-                        action_col = r6
+                new_s_qty = col_e1.number_input("Исправить Количество (шт)", min_value=1, value=old_qty)
+                new_s_price = col_e2.number_input("Исправить Цену за 1 шт (сом)", min_value=0.0, value=old_price_one)
+                new_s_payment = col_e3.selectbox("Способ оплаты", ["Наличные", "Рассрочка"], index=0 if sale_to_edit["payment"] == "Наличные" else 1)
+                
+                new_total_sum = new_s_qty * new_s_price
+                
+                new_s_down = 0.0
+                if new_s_payment == "Рассрочка":
+                    old_down = float(sale_to_edit.get("down_payment", 0.0))
+                    new_s_down = col_e4.number_input("Первоначальный взнос (сом)", min_value=0.0, max_value=float(new_total_sum), value=min(old_down, new_total_sum))
+                
+                new_credit_balance = new_total_sum - new_s_down
+                
+                btn_save_sale, btn_del_sale = st.columns(2)
+                click_save = btn_save_sale.form_submit_button("💾 Сохранить изменения в продаже", type="primary")
+                click_del = btn_del_sale.form_submit_button("❌ Полностью отменить эту продажу", type="secondary")
+                
+                if click_save:
+                    # Корректируем склад! Считаем разницу в штуках
+                    qty_diff = new_s_qty - old_qty
+                    p_pure = sale_to_edit.get("pure_name")
+                    b_date = sale_to_edit.get("batch_date")
                     
-                    button_key = f"del_{tab_name}_{row.get('id', idx)}"
-                    if action_col.button("❌ Отменить", key=button_key, type="secondary"):
-                        st.session_state.show_sale_delete = {
-                            "index_in_data_sales": idx, 
-                            "sale_id": row.get("id"),
-                            "name": row['name'], 
-                            "qty": row['qty'], 
-                            "total": row['total_sale']
-                        }
-                        st.rerun()
+                    if p_pure and b_date and p_pure in data["products"]:
+                        for b in data["products"][p_pure]:
+                            if b["date"] == b_date:
+                                b["qty"] -= qty_diff # Если продали больше, со склада спишется разница
+                                break
+                    
+                    # Пересчитываем финансовые показатели
+                    single_cost = sale_to_edit["total_cost"] / old_qty
+                    new_total_cost = new_s_qty * single_cost
+                    
+                    # Записываем обновленные данные
+                    data["sales"][target_sale_idx]["qty"] = new_s_qty
+                    data["sales"][target_sale_idx]["total_sale"] = new_total_sum
+                    data["sales"][target_sale_idx]["total_cost"] = new_total_cost
+                    data["sales"][target_sale_idx]["profit"] = new_total_sum - new_total_cost
+                    data["sales"][target_sale_idx]["payment"] = new_s_payment
+                    data["sales"][target_sale_idx]["down_payment"] = new_s_down
+                    data["sales"][target_sale_idx]["credit_balance"] = new_credit_balance
+                    
+                    save_data(data)
+                    st.success("Данные о продаже успешно изменены во всех отчетах!")
+                    st.rerun()
+                
+                if click_del:
+                    st.session_state.show_sale_delete = {
+                        "sale_id": sale_to_edit.get("id"),
+                        "name": sale_to_edit['name'], 
+                        "qty": sale_to_edit['qty'], 
+                        "total": sale_to_edit['total_sale']
+                    }
+                    st.rerun()
 
+            # Диалог окончательного удаления продажи
             if "show_sale_delete" in st.session_state and st.session_state.show_sale_delete:
                 s_del = st.session_state.show_sale_delete
-                
                 @st.dialog("⚠️ Отмена и удаление продажи")
                 def delete_sale_dialog():
                     st.error("Вы уверены, что хотите ОТМЕНИТЬ эту продажу?")
                     st.markdown(f"**Операция:** {s_del['name']} | Количество: {s_del['qty']} шт.")
-                    
                     col_y, col_n = st.columns(2)
                     if col_y.button("🔥 Да, отменить", type="primary", use_container_width=True):
                         target_idx = None
@@ -493,44 +497,71 @@ elif menu == "📊 Отчеты по дням":
                             if s.get("id") == s_del["sale_id"]:
                                 target_idx = i
                                 break
-                        
                         if target_idx is not None:
                             sale_item = data["sales"][target_idx]
                             p_pure = sale_item.get("pure_name", None)
                             b_date = sale_item.get("batch_date", None)
-                            
                             if p_pure and b_date and p_pure in data["products"]:
-                                batch_found = False
                                 for b in data["products"][p_pure]:
                                     if b["date"] == b_date:
                                         b["qty"] += sale_item["qty"]
-                                        batch_found = True
                                         break
-                                if not batch_found:
-                                    single_cost = sale_item["total_cost"] / sale_item["qty"]
-                                    single_price = sale_item["total_sale"] / sale_item["qty"]
-                                    data["products"][p_pure].append({"date": b_date, "qty": sale_item["qty"], "cost": single_cost, "price": single_price})
-                            
                             data["sales"].pop(target_idx)
                             save_data(data)
-                        
                         st.session_state.show_sale_delete = None
                         st.success("Продажа успешно отменена!")
                         st.rerun()
-                        
                     if col_n.button("Назад", type="secondary", use_container_width=True):
                         st.session_state.show_sale_delete = None
                         st.rerun()
                 delete_sale_dialog()
 
-            with tab1:
-                render_sales_table_with_actions(filtered_df, "all")
-            with tab2:
-                render_sales_table_with_actions(filtered_df[filtered_df['payment'] == 'Наличные'], "cash")
-            with tab3:
-                render_sales_table_with_actions(filtered_df[filtered_df['payment'] == 'Рассрочка'], "credit")
+            st.markdown("---")
+            st.subheader("📋 Таблицы детализации продаж за период")
+            tab1, tab2, tab3 = st.tabs(["Все продажи", "💵 Наличные", "📝 Рассрочка"])
+            
+            def render_sales_table_simple(dataframe, tab_name):
+                if dataframe.empty:
+                    st.write("Нет операций за этот период.")
+                    return
+                if tab_name == "credit":
+                    h1, h2, h3, h4, h5, h6 = st.columns([2, 3, 1, 1.5, 1.5, 1.5])
+                    h1.markdown("**Дата/Время**")
+                    h2.markdown("**Товар**")
+                    h3.markdown("**Кол-во**")
+                    h4.markdown("**Итого цена**")
+                    h5.markdown("**Перв. взнос**")
+                    h6.markdown("**Остаток долга**")
+                    st.markdown("---")
+                    for _, row in dataframe.iloc[::-1].iterrows():
+                        r1, r2, r3, r4, r5, r6 = st.columns([2, 3, 1, 1.5, 1.5, 1.5])
+                        r1.write(row['date'])
+                        r2.write(str(row['name']))
+                        r3.write(f"{row['qty']} шт.")
+                        r4.write(f"{row['total_sale']:.2f} c.")
+                        r5.write(f"{row.get('down_payment', 0.0):.2f} c.")
+                        r6.write(f"{row.get('credit_balance', row['total_sale']):.2f} c.")
+                else:
+                    h1, h2, h3, h4, h5 = st.columns([2, 3, 1, 2, 2])
+                    h1.markdown("**Дата/Время**")
+                    h2.markdown("**Товар (Партия)**")
+                    h3.markdown("**Кол-во**")
+                    h4.markdown("**Сумма сделки**")
+                    h5.markdown("**Тип оплаты**")
+                    st.markdown("---")
+                    for _, row in dataframe.iloc[::-1].iterrows():
+                        r1, r2, r3, r4, r5 = st.columns([2, 3, 1, 2, 2])
+                        r1.write(row['date'])
+                        r2.write(str(row['name']))
+                        r3.write(f"{row['qty']} шт.")
+                        r4.write(f"{row['total_sale']:.2f} c.")
+                        r5.write(row.get('payment', 'Наличные'))
 
-# ==================== ВКЛАДКА 5: ОПЛАТА КОНТРАГЕНТАМ ====================
+            with tab1: render_sales_table_simple(filtered_df, "all")
+            with tab2: render_sales_table_simple(filtered_df[filtered_df['payment'] == 'Наличные'], "cash")
+            with tab3: render_sales_table_simple(filtered_df[filtered_df['payment'] == 'Рассрочка'], "credit")
+
+# ==================== ВКЛАДКА 5: ОПЛАТА КОНТРАГЕНТАМ (БЕЗОПАСНОЕ ХРАНИЛИЩЕ ОЧИСТКИ) ====================
 elif menu == "🧾 Оплата контрагентам":
     st.header("Выплаты поставщикам и контрагентам")
     st.subheader("📤 Зафиксировать выплату")
@@ -562,3 +593,15 @@ elif menu == "🧾 Оплата контрагентам":
         
         total_paid = sum(p["amount"] for p in data["supplier_payments"])
         st.metric("Всего выплачено контрагентам", f"{total_paid:,.2f} сом")
+
+    # НОВОЕ: Сюда мы надежно спрятали кнопку полного сброса базы данных
+    st.markdown("---")
+    with st.expander("⚙️ Системные настройки (Очистка базы данных)"):
+        st.warning("Внимание! Этот блок предназначен только для экстренного сброса данных.")
+        confirm_check = st.checkbox("Я точно хочу удалить ВСЮ базу данных (склад, продажи, кассу) без возможности восстановления")
+        if st.button("🔥 Запустить полную очистку системы", type="secondary", disabled=not confirm_check):
+            data = {"products": {}, "sales": [], "cash_operations": [], "supplier_payments": []}
+            st.session_state.data = data
+            save_data(data)
+            st.success("Система успешно сброшена до заводских настроек!")
+            st.rerun()
