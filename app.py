@@ -34,7 +34,7 @@ menu = st.sidebar.radio("Разделы", [
 ])
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Магазин Сулайман-Тоо • v5.8 (Supabase)")
+st.sidebar.caption("Магазин Сулайман-Тоо • v5.9 (Supabase)")
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 def db_get_stock():
@@ -281,9 +281,7 @@ elif menu == "💰 Касса / Продажи":
                 day_str = sale_date.strftime("%Y-%m-%d")
                 date_full_str = f"{day_str} {datetime.now().strftime('%H:%M')}"
                 
-                cart_df = pd.DataFrame(st.session_state.cart)
-                total_cart_sum = cart_df["total"].sum()
-                
+                # ЖЕЛЕЗНАЯ ЛОГИКА: Пишем всю финансовую сумму рассрочки строго на ПЕРВЫЙ товар, чтобы избежать дробей и округлений в базе
                 for idx, item in enumerate(st.session_state.cart):
                     p_res = supabase.table("products").select("qty").eq("id", item["batch_id"]).execute().data[0]
                     new_qty = int(p_res["qty"]) - item["qty"]
@@ -291,14 +289,18 @@ elif menu == "💰 Касса / Продажи":
                     
                     t_cost = item["qty"] * item["cost"]
                     
-                    item_share = item["total"] / total_cart_sum if total_cart_sum > 0 else 0
-                    item_down = round(down_payment * item_share, 2)
-                    item_credit = round(total_with_markup * item_share, 2)
+                    # Финансовые показатели целыми числами привязываем к первой позиции
+                    if idx == 0:
+                        item_down = int(down_payment)
+                        item_credit = int(total_with_markup)
+                    else:
+                        item_down = 0
+                        item_credit = 0
                     
                     supabase.table("sales").insert({
                         "id": sale_group_id, "date": date_full_str, "day": day_str,
                         "name": f"{item['name']} (приход {item['batch_date']})", "pure_name": item["pure_name"], "batch_date": item["batch_date"],
-                        "qty": item["qty"], "total_sale": item["total"], "total_cost": t_cost, "profit": item["total"] - t_cost,
+                        "qty": item["qty"], "total_sale": int(item["total"]), "total_cost": int(t_cost), "profit": int(item["total"] - t_cost),
                         "payment": pay_method, "down_payment": item_down, "credit_balance": item_credit, "client_id": client_id
                     }).execute()
                 
@@ -307,7 +309,7 @@ elif menu == "💰 Касса / Продажи":
                         due_date = (sale_date + timedelta(days=30 * m)).strftime("%Y-%m-%d")
                         supabase.table("credit_payments").insert({
                             "sale_id": sale_group_id, "client_id": client_id, "due_date": due_date,
-                            "amount_expected": monthly_payment, "amount_paid": 0.0, "status": "Не оплачен"
+                            "amount_expected": int(monthly_payment), "amount_paid": 0, "status": "Не оплачен"
                         }).execute()
                         
                 st.session_state.cart = []
