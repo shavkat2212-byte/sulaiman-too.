@@ -34,7 +34,7 @@ menu = st.sidebar.radio("Разделы", [
 ])
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Магазин Сулайман-Тоо • v5.3 (Supabase)")
+st.sidebar.caption("Магазин Сулайман-Тоо • v5.5 (Supabase)")
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 def db_get_stock():
@@ -249,10 +249,7 @@ elif menu == "💰 Касса / Продажи":
         if st.session_state.cart:
             st.markdown("---")
             st.subheader("💳 Параметры оплаты чека")
-            
-            # НОВОЕ: Поле для выбора даты продажи (по умолчанию стоит сегодня)
             sale_date = st.date_input("📅 Дата продажи (можно изменить для ввода задним числом)", value=datetime.now().date())
-            
             pay_method = st.radio("Способ оплаты чека", ["Наличные", "Рассрочка"], horizontal=True)
             
             down_payment = 0.0
@@ -283,8 +280,6 @@ elif menu == "💰 Касса / Продажи":
 
             if st.button("🚀 Оформить и провести сделку", type="primary", use_container_width=True):
                 sale_group_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
-                
-                # Форматируем выбранную пользователем дату
                 day_str = sale_date.strftime("%Y-%m-%d")
                 date_full_str = f"{day_str} {datetime.now().strftime('%H:%M')}"
                 
@@ -305,7 +300,6 @@ elif menu == "💰 Касса / Продажи":
                 
                 if pay_method == "Рассрочка" and client_id:
                     for m in range(1, months + 1):
-                        # График платежей тоже отсчитывается от выбранной даты продажи задним числом!
                         due_date = (sale_date + timedelta(days=30 * m)).strftime("%Y-%m-%d")
                         supabase.table("credit_payments").insert({
                             "sale_id": sale_group_id, "client_id": client_id, "due_date": due_date,
@@ -320,7 +314,9 @@ elif menu == "💰 Касса / Продажи":
 elif menu == "👥 База клиентов":
     st.header("👥 Управление клиентами и рассрочками")
     
-    col_c1, col_c2 = st.columns([1, 1.5])
+    c_all = supabase.table("clients").select("*").order("fio").execute()
+    
+    col_c1, col_c2 = st.columns([1, 1.2])
     with col_c1:
         st.subheader("➕ Регистрация нового клиента")
         with st.form("client_reg", clear_on_submit=True):
@@ -329,21 +325,49 @@ elif menu == "👥 База клиентов":
             passport = st.text_area("Паспортные данные").strip()
             if st.form_submit_button("Зарегистрировать"):
                 if fio:
-                    supabase.table("clients").insert({"fio": fio, "phone": phone, "passport": passport}).execute()
+                    supabase.table("clients").insert({
+                        "fio": fio, 
+                        "phone": phone if phone else None, 
+                        "passport": passport if passport else None
+                    }).execute()
                     st.success("Клиент успешно добавлен в базу!")
                     st.rerun()
                     
     with col_c2:
-        st.subheader("📋 Список клиентов в базе")
-        c_all = supabase.table("clients").select("*").order("fio").execute()
+        st.subheader("✏️ Редактировать данные клиента")
         if not c_all.data:
-            st.info("База клиентов пуста.")
+            st.info("В базе пока нет клиентов для редактирования.")
         else:
-            df_c = pd.DataFrame(c_all.data).drop(columns=["created_at"], errors="ignore")
-            st.dataframe(df_c, use_container_width=True, hide_index=True)
+            client_edit_opts = {c["fio"]: c for c in c_all.data}
+            selected_edit_name = st.selectbox("Выберите клиента для изменения данных", list(client_edit_opts.keys()))
+            client_to_update = client_edit_opts[selected_edit_name]
+            
+            with st.form("client_edit_form"):
+                new_fio = st.text_input("Изменить ФИО", value=str(client_to_update["fio"]))
+                new_phone = st.text_input("Изменить телефон", value=str(client_to_update["phone"] or ""))
+                new_passport = st.text_area("Изменить паспортные данные", value=str(client_to_update["passport"] or ""))
+                
+                if st.form_submit_button("💾 Сохранить изменения в карточке"):
+                    if new_fio:
+                        supabase.table("clients").update({
+                            "fio": new_fio.strip(),
+                            "phone": new_phone.strip() if new_phone.strip() else None,
+                            "passport": new_passport.strip() if new_passport.strip() else None
+                        }).eq("id", client_to_update["id"]).execute()
+                        st.success("Данные клиента успешно обновлены!")
+                        st.rerun()
+
+    st.markdown("---")
+    st.subheader("📋 Список всех клиентов в базе")
+    if not c_all.data:
+        st.info("База клиентов пуста.")
+    else:
+        df_c = pd.DataFrame(c_all.data).drop(columns=["created_at"], errors="ignore")
+        df_c = df_c.rename(columns={"id": "ID", "fio": "ФИО Клиента", "phone": "Телефон", "passport": "Паспортные данные"})
+        st.dataframe(df_c[["ID", "ФИО Клиента", "Телефон", "Паспортные данные"]], use_container_width=True, hide_index=True)
             
     st.markdown("---")
-    st.subheader("🔍 Карточка клиента и График платежей")
+    st.subheader("🔍 Карточка рассрочки и График платежей")
     if c_all.data:
         client_opts = {c["fio"]: c["id"] for c in c_all.data}
         selected_client_name = st.selectbox("Выберите клиента для просмотра задолженности", list(client_opts.keys()))
@@ -416,7 +440,7 @@ elif menu == "💵 Баланс Кассы":
 
 # ==================== 📊 ВКЛАДКА 5: ОТЧЕТЫ ====================
 elif menu == "📊 Отчеты по дням":
-    st.header("Аналитика и история продаж")
+    st.header("📊 Аналитика и история продаж")
     sales_all = supabase.table("sales").select("*").execute()
     
     if not sales_all.data:
@@ -431,7 +455,8 @@ elif menu == "📊 Отчеты по дням":
         if isinstance(date_range, tuple) and len(date_range) == 2:
             start_date, end_date = date_range
             filtered_df = df[(df['day'] >= start_date) & (df['day'] <= end_date)]
-        else: filtered_df = df
+        else: 
+            filtered_df = df
             
         if filtered_df.empty:
             st.info("За выбранный период продаж не найдено.")
@@ -440,9 +465,60 @@ elif menu == "📊 Отчеты по дням":
             c1.metric("💰 Общая Выручка за период", f"{filtered_df['total_sale'].sum():,.2f} сом")
             c2.metric("📈 Общая Чистая прибыль", f"{filtered_df['profit'].sum():,.2f} сом")
 
+            # 📥 НОВОЕ: Функция выгрузки красивого отчета в Excel
+            st.markdown("### 🖨️ Печать и Экспорт")
+            
+            # Подготавливаем данные для красивого Excel
+            excel_df = filtered_df.copy()
+            excel_df = excel_df.rename(columns={
+                "date": "Дата и время",
+                "name": "Наименование товара / Партия",
+                "qty": "Кол-во (шт)",
+                "total_sale": "Сумма продажи (сом)",
+                "total_cost": "Себестоимость (сом)",
+                "profit": "Прибыль (сом)",
+                "payment": "Тип оплаты"
+            })
+            
+            # Оставляем только нужные колонки для печатного отчета
+            cols_to_save = ["Дата и время", "Наименование товара / Партия", "Кол-во (шт)", "Сумма продажи (сом)", "Себестоимость (сом)", "Прибыль (сом)", "Тип оплаты"]
+            excel_df = excel_df[cols_to_save]
+            
+            # Генерируем Excel в буфер памяти
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                excel_df.to_excel(writer, index=False, sheet_name='Отчет по продажам')
+            
+            st.download_button(
+                label="📥 Скачать этот отчёт в Excel (для печати)",
+                data=buffer.getvalue(),
+                file_name=f"Otchet_Prodaj_{start_date}_to_{end_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                use_container_width=True
+            )
+
             st.markdown("---")
-            st.subheader("📋 Детализация продаж")
+            st.subheader("📋 Детализация продаж на сайте")
             st.dataframe(filtered_df[["date", "name", "qty", "total_sale", "payment"]], use_container_width=True, hide_index=True)
+
+            # 📈 НОВОЕ: Сводный аналитический отчет по рассрочкам
+            st.markdown("---")
+            st.subheader("📊 Аналитика по рассрочкам (за все время)")
+            
+            credits_data = supabase.table("credit_payments").select("amount_expected, amount_paid, status").execute()
+            if credits_data.data:
+                df_creds = pd.DataFrame(credits_data.data)
+                total_expected = df_creds["amount_expected"].sum()
+                total_paid = df_creds["amount_paid"].sum()
+                total_remaining = total_expected - total_paid
+                
+                cr1, cr2, cr3 = st.columns(3)
+                cr1.metric("💳 Общая сумма выданных рассрочек", f"{total_expected:,.2f} сом")
+                cr2.metric("✅ Всего собрано денег по рассрочкам", f"{total_paid:,.2f} сом")
+                cr3.metric("🔴 Сколько еще ДОЛЖНЫ клиенты", f"{total_remaining:,.2f} сом", delta=f"-{total_remaining:,.0f} сом", delta_color="inverse")
+            else:
+                st.info("Активных рассрочек в системе пока нет.")
 
             st.markdown("---")
             st.subheader("✏️ Редактировать или Отменить продажу из детализации")
