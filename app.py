@@ -34,7 +34,7 @@ menu = st.sidebar.radio("Разделы", [
 ])
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Магазин Сулайман-Тоо • v5.5 (Supabase)")
+st.sidebar.caption("Магазин Сулайман-Тоо • v5.6 (Supabase)")
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 def db_get_stock():
@@ -106,7 +106,6 @@ if menu == "📦 Склад / Поступление":
                         existing_map = {row["name"]: row["id"] for row in existing_res.data}
                         
                         insert_list = []
-                        
                         for idx, row in df.iterrows():
                             try:
                                 name_raw = str(row.iloc[0]).strip().lower()
@@ -131,7 +130,6 @@ if menu == "📦 Склад / Поступление":
                             
                         st.success("🎉 Облачный склад Supabase успешно синхронизирован!")
                         st.rerun()
-                        
                     except Exception as e:
                         st.error(f"Произошла ошибка при чтении или отправке файла: {e}")
 
@@ -313,7 +311,6 @@ elif menu == "💰 Касса / Продажи":
 # ==================== 👥 ВКАЛАДКА 3: БАЗА КЛИЕНТОВ ====================
 elif menu == "👥 База клиентов":
     st.header("👥 Управление клиентами и рассрочками")
-    
     c_all = supabase.table("clients").select("*").order("fio").execute()
     
     col_c1, col_c2 = st.columns([1, 1.2])
@@ -326,9 +323,7 @@ elif menu == "👥 База клиентов":
             if st.form_submit_button("Зарегистрировать"):
                 if fio:
                     supabase.table("clients").insert({
-                        "fio": fio, 
-                        "phone": phone if phone else None, 
-                        "passport": passport if passport else None
+                        "fio": fio, "phone": phone if phone else None, "passport": passport if passport else None
                     }).execute()
                     st.success("Клиент успешно добавлен в базу!")
                     st.rerun()
@@ -435,7 +430,7 @@ elif menu == "💵 Баланс Кассы":
             supabase.table("cash_operations").insert({
                 "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "amount": actual, "comment": comment or op_type
             }).execute()
-            st.success("Операция проведена!")
+            st.success("Операция провена!")
             st.rerun()
 
 # ==================== 📊 ВКЛАДКА 5: ОТЧЕТЫ ====================
@@ -455,36 +450,37 @@ elif menu == "📊 Отчеты по дням":
         if isinstance(date_range, tuple) and len(date_range) == 2:
             start_date, end_date = date_range
             filtered_df = df[(df['day'] >= start_date) & (df['day'] <= end_date)]
-        else: 
-            filtered_df = df
+        else: filtered_df = df
             
         if filtered_df.empty:
             st.info("За выбранный период продаж не найдено.")
         else:
-            c1, c2 = st.columns(2)
-            c1.metric("💰 Общая Выручка за период", f"{filtered_df['total_sale'].sum():,.2f} сом")
-            c2.metric("📈 Общая Чистая прибыль", f"{filtered_df['profit'].sum():,.2f} сом")
+            # ИСПРАВЛЕНО: Математика подсчета выручки. Нал с продаж + Реальные Взносы из рассрочек
+            revenue_cash = filtered_df[filtered_df["payment"] == "Наличные"]["total_sale"].sum()
+            revenue_down = filtered_df[filtered_df["payment"] == "Рассрочка"]["down_payment"].sum()
+            total_real_revenue = revenue_cash + revenue_down
 
-            # 📥 НОВОЕ: Функция выгрузки красивого отчета в Excel
+            c1, c2 = st.columns(2)
+            c1.metric("💰 Живая Выручка в кассу (Нал + Взносы)", f"{total_real_revenue:,.2f} сом")
+            c2.metric("📈 Общая Чистая прибыль от сделок", f"{filtered_df['profit'].sum():,.2f} сом")
+
             st.markdown("### 🖨️ Печать и Экспорт")
             
             # Подготавливаем данные для красивого Excel
             excel_df = filtered_df.copy()
+            excel_df["В рассрочку (сом)"] = excel_df.apply(lambda r: float(r["credit_balance"]) if r["payment"] == "Рассрочка" else 0.0, axis=1)
             excel_df = excel_df.rename(columns={
                 "date": "Дата и время",
                 "name": "Наименование товара / Партия",
                 "qty": "Кол-во (шт)",
-                "total_sale": "Сумма продажи (сом)",
-                "total_cost": "Себестоимость (сом)",
-                "profit": "Прибыль (сом)",
+                "total_sale": "Общая сумма товара (сом)",
+                "down_payment": "Оплачено Нал/Взнос (сом)",
                 "payment": "Тип оплаты"
             })
             
-            # Оставляем только нужные колонки для печатного отчета
-            cols_to_save = ["Дата и время", "Наименование товара / Партия", "Кол-во (шт)", "Сумма продажи (сом)", "Себестоимость (сом)", "Прибыль (сом)", "Тип оплаты"]
+            cols_to_save = ["Дата и время", "Наименование товара / Партия", "Кол-во (шт)", "Общая сумма товара (сом)", "Оплачено Нал/Взнос (сом)", "В рассрочку (сом)", "Тип оплаты"]
             excel_df = excel_df[cols_to_save]
             
-            # Генерируем Excel в буфер памяти
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                 excel_df.to_excel(writer, index=False, sheet_name='Отчет по продажам')
@@ -500,13 +496,17 @@ elif menu == "📊 Отчеты по дням":
 
             st.markdown("---")
             st.subheader("📋 Детализация продаж на сайте")
-            st.dataframe(filtered_df[["date", "name", "qty", "total_sale", "payment"]], use_container_width=True, hide_index=True)
+            
+            # На сайте тоже выведем таблицу красиво и наглядно
+            display_web_df = filtered_df.copy()
+            display_web_df["Оплачено Нал"] = display_web_df.apply(lambda r: r["total_sale"] if r["payment"] == "Наличные" else r["down_payment"], axis=1)
+            display_web_df["В рассрочку"] = display_web_df.apply(lambda r: r["credit_balance"] if r["payment"] == "Рассрочка" else 0.0, axis=1)
+            
+            st.dataframe(display_web_df[["date", "name", "qty", "total_sale", "Оплачено Нал", "В рассрочку", "payment"]], use_container_width=True, hide_index=True)
 
-            # 📈 НОВОЕ: Сводный аналитический отчет по рассрочкам
             st.markdown("---")
             st.subheader("📊 Аналитика по рассрочкам (за все время)")
-            
-            credits_data = supabase.table("credit_payments").select("amount_expected, amount_paid, status").execute()
+            credits_data = supabase.table("credit_payments").select("amount_expected, amount_paid").execute()
             if credits_data.data:
                 df_creds = pd.DataFrame(credits_data.data)
                 total_expected = df_creds["amount_expected"].sum()
