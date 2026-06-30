@@ -34,7 +34,7 @@ menu = st.sidebar.radio("Разделы", [
 ])
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Магазин Сулайман-Тоо • v5.2 (Supabase)")
+st.sidebar.caption("Магазин Сулайман-Тоо • v5.3 (Supabase)")
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 def db_get_stock():
@@ -102,11 +102,9 @@ if menu == "📦 Склад / Поступление":
 
                         today = datetime.now().strftime("%Y-%m-%d")
                         
-                        # Шаг 1: Скачиваем текущие товары за сегодня, чтобы не делать миллион запросов
                         existing_res = supabase.table("products").select("id", "name").eq("date", today).execute()
                         existing_map = {row["name"]: row["id"] for row in existing_res.data}
                         
-                        # Списки для пакетной (быстрой) обработки
                         insert_list = []
                         
                         for idx, row in df.iterrows():
@@ -117,20 +115,17 @@ if menu == "📦 Склад / Поступление":
                                 cost_raw = float(str(row.iloc[2]).replace(" ", "").replace(",", "."))
                                 price_raw = float(str(row.iloc[3]).replace(" ", "").replace(",", "."))
                                 
-                                # Если товар за сегодня уже есть в базе — обновляем его прямо на месте
                                 if name_raw in existing_map:
                                     supabase.table("products").update({
                                         "qty": qty_raw, "cost": cost_raw, "price": price_raw
                                     }).eq("id", existing_map[name_raw]).execute()
                                 else:
-                                    # Если товара нет — добавляем в пакет для массовой вставки
                                     insert_list.append({
                                         "name": name_raw, "qty": qty_raw, "cost": cost_raw, "price": price_raw, "date": today
                                     })
                             except:
                                 continue
                         
-                        # Шаг 2: Отправляем весь пакет НОВЫХ товаров ОДНИМ запросом (Bulk Insert)
                         if insert_list:
                             supabase.table("products").insert(insert_list).execute()
                             
@@ -152,7 +147,6 @@ if menu == "📦 Склад / Поступление":
                 if st.form_submit_button("Сохранить в облако"):
                     if name:
                         today = datetime.now().strftime("%Y-%m-%d")
-                        # Для ручного штучного ввода оставим простую быструю проверку
                         existing = supabase.table("products").select("*").eq("name", name).eq("date", today).execute()
                         if existing.data:
                             supabase.table("products").update({"qty": qty, "cost": cost, "price": price}).eq("id", existing.data[0]["id"]).execute()
@@ -255,6 +249,10 @@ elif menu == "💰 Касса / Продажи":
         if st.session_state.cart:
             st.markdown("---")
             st.subheader("💳 Параметры оплаты чека")
+            
+            # НОВОЕ: Поле для выбора даты продажи (по умолчанию стоит сегодня)
+            sale_date = st.date_input("📅 Дата продажи (можно изменить для ввода задним числом)", value=datetime.now().date())
+            
             pay_method = st.radio("Способ оплаты чека", ["Наличные", "Рассрочка"], horizontal=True)
             
             down_payment = 0.0
@@ -285,6 +283,11 @@ elif menu == "💰 Касса / Продажи":
 
             if st.button("🚀 Оформить и провести сделку", type="primary", use_container_width=True):
                 sale_group_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
+                
+                # Форматируем выбранную пользователем дату
+                day_str = sale_date.strftime("%Y-%m-%d")
+                date_full_str = f"{day_str} {datetime.now().strftime('%H:%M')}"
+                
                 for item in st.session_state.cart:
                     p_res = supabase.table("products").select("qty").eq("id", item["batch_id"]).execute().data[0]
                     new_qty = int(p_res["qty"]) - item["qty"]
@@ -292,7 +295,7 @@ elif menu == "💰 Касса / Продажи":
                     
                     t_cost = item["qty"] * item["cost"]
                     supabase.table("sales").insert({
-                        "id": sale_group_id, "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "day": datetime.now().strftime("%Y-%m-%d"),
+                        "id": sale_group_id, "date": date_full_str, "day": day_str,
                         "name": f"{item['name']} (приход {item['batch_date']})", "pure_name": item["pure_name"], "batch_date": item["batch_date"],
                         "qty": item["qty"], "total_sale": item["total"], "total_cost": t_cost, "profit": item["total"] - t_cost,
                         "payment": pay_method, "down_payment": down_payment if item == st.session_state.cart[0] else 0.0,
@@ -302,14 +305,15 @@ elif menu == "💰 Касса / Продажи":
                 
                 if pay_method == "Рассрочка" and client_id:
                     for m in range(1, months + 1):
-                        due_date = (datetime.now() + timedelta(days=30 * m)).strftime("%Y-%m-%d")
+                        # График платежей тоже отсчитывается от выбранной даты продажи задним числом!
+                        due_date = (sale_date + timedelta(days=30 * m)).strftime("%Y-%m-%d")
                         supabase.table("credit_payments").insert({
                             "sale_id": sale_group_id, "client_id": client_id, "due_date": due_date,
                             "amount_expected": monthly_payment, "amount_paid": 0.0, "status": "Не оплачен"
                         }).execute()
                         
                 st.session_state.cart = []
-                st.success("🎉 Сделка и график платежей успешно зафиксированы в облаке Supabase!")
+                st.success(f"🎉 Сделка успешно проведена и зафиксирована датой {day_str}!")
                 st.rerun()
 
 # ==================== 👥 ВКАЛАДКА 3: БАЗА КЛИЕНТОВ ====================
