@@ -34,7 +34,7 @@ menu = st.sidebar.radio("Разделы", [
 ])
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Магазин Сулайман-Тоо • v5.6 (Supabase)")
+st.sidebar.caption("Магазин Сулайман-Тоо • v5.7 (Supabase)")
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 def db_get_stock():
@@ -319,11 +319,13 @@ elif menu == "👥 База клиентов":
         with st.form("client_reg", clear_on_submit=True):
             fio = st.text_input("ФИО Клиента").strip()
             phone = st.text_input("Номер телефона").strip()
+            address = st.text_input("Адрес проживания").strip()  # Добавлен ввод адреса
             passport = st.text_area("Паспортные данные").strip()
             if st.form_submit_button("Зарегистрировать"):
                 if fio:
                     supabase.table("clients").insert({
-                        "fio": fio, "phone": phone if phone else None, "passport": passport if passport else None
+                        "fio": fio, "phone": phone if phone else None, 
+                        "address": address if address else None, "passport": passport if passport else None
                     }).execute()
                     st.success("Клиент успешно добавлен в базу!")
                     st.rerun()
@@ -340,6 +342,7 @@ elif menu == "👥 База клиентов":
             with st.form("client_edit_form"):
                 new_fio = st.text_input("Изменить ФИО", value=str(client_to_update["fio"]))
                 new_phone = st.text_input("Изменить телефон", value=str(client_to_update["phone"] or ""))
+                new_address = st.text_input("Изменить адрес", value=str(client_to_update.get("address") or ""))  # Редактирование адреса
                 new_passport = st.text_area("Изменить паспортные данные", value=str(client_to_update["passport"] or ""))
                 
                 if st.form_submit_button("💾 Сохранить изменения в карточке"):
@@ -347,6 +350,7 @@ elif menu == "👥 База клиентов":
                         supabase.table("clients").update({
                             "fio": new_fio.strip(),
                             "phone": new_phone.strip() if new_phone.strip() else None,
+                            "address": new_address.strip() if new_address.strip() else None,
                             "passport": new_passport.strip() if new_passport.strip() else None
                         }).eq("id", client_to_update["id"]).execute()
                         st.success("Данные клиента успешно обновлены!")
@@ -358,8 +362,13 @@ elif menu == "👥 База клиентов":
         st.info("База клиентов пуста.")
     else:
         df_c = pd.DataFrame(c_all.data).drop(columns=["created_at"], errors="ignore")
-        df_c = df_c.rename(columns={"id": "ID", "fio": "ФИО Клиента", "phone": "Телефон", "passport": "Паспортные данные"})
-        st.dataframe(df_c[["ID", "ФИО Клиента", "Телефон", "Паспортные данные"]], use_container_width=True, hide_index=True)
+        # Переименование с учетом адреса
+        df_c = df_c.rename(columns={"id": "ID", "fio": "ФИО Клиента", "phone": "Телефон", "address": "Адрес проживания", "passport": "Паспортные данные"})
+        # Если колонки нет в датафрейме (подстраховка), добавим пустышку
+        if "Адрес проживания" not in df_c.columns:
+            df_c["Адрес проживания"] = None
+            
+        st.dataframe(df_c[["ID", "ФИО Клиента", "Телефон", "Адрес проживания", "Паспортные данные"]], use_container_width=True, hide_index=True)
             
     st.markdown("---")
     st.subheader("🔍 Карточка рассрочки и График платежей")
@@ -455,7 +464,6 @@ elif menu == "📊 Отчеты по дням":
         if filtered_df.empty:
             st.info("За выбранный период продаж не найдено.")
         else:
-            # ИСПРАВЛЕНО: Математика подсчета выручки. Нал с продаж + Реальные Взносы из рассрочек
             revenue_cash = filtered_df[filtered_df["payment"] == "Наличные"]["total_sale"].sum()
             revenue_down = filtered_df[filtered_df["payment"] == "Рассрочка"]["down_payment"].sum()
             total_real_revenue = revenue_cash + revenue_down
@@ -466,7 +474,6 @@ elif menu == "📊 Отчеты по дням":
 
             st.markdown("### 🖨️ Печать и Экспорт")
             
-            # Подготавливаем данные для красивого Excel
             excel_df = filtered_df.copy()
             excel_df["В рассрочку (сом)"] = excel_df.apply(lambda r: float(r["credit_balance"]) if r["payment"] == "Рассрочка" else 0.0, axis=1)
             excel_df = excel_df.rename(columns={
@@ -497,7 +504,6 @@ elif menu == "📊 Отчеты по дням":
             st.markdown("---")
             st.subheader("📋 Детализация продаж на сайте")
             
-            # На сайте тоже выведем таблицу красиво и наглядно
             display_web_df = filtered_df.copy()
             display_web_df["Оплачено Нал"] = display_web_df.apply(lambda r: r["total_sale"] if r["payment"] == "Наличные" else r["down_payment"], axis=1)
             display_web_df["В рассрочку"] = display_web_df.apply(lambda r: r["credit_balance"] if r["payment"] == "Рассрочка" else 0.0, axis=1)
