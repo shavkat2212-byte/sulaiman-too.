@@ -20,7 +20,6 @@ except Exception as e:
 st.set_page_config(page_title="Магазин Сулайман-Тоо", layout="wide", page_icon="🏬")
 st.title("🏬 Магазин «Сулайман-Тоо» — Учет и Рассрочки")
 
-# Инициализация корзины покупок в сессии
 if "cart" not in st.session_state:
     st.session_state.cart = []
 
@@ -35,7 +34,7 @@ menu = st.sidebar.radio("Разделы", [
 ])
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Магазин Сулайман-Тоо • v5.0 (Supabase)")
+st.sidebar.caption("Магазин Сулайман-Тоо • v5.1 (Supabase)")
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 def db_get_stock():
@@ -96,31 +95,50 @@ if menu == "📦 Склад / Поступление":
             st.info("Склад пуст")
     else:
         st.subheader("📥 Загрузка/Обновление товаров из Excel (.xlsx или .csv)")
-        uploaded = st.file_uploader("Выберите файл таблицы", type=["csv", "xlsx"])
-        if uploaded:
-            try:
-                if uploaded.name.endswith(".xlsx"):
-                    df = pd.read_excel(uploaded)
-                else:
-                    df = pd.read_csv(uploaded, encoding="utf-8")
+        st.write("💡 Порядок столбцов в файле: **Название товара | Количество | Цена закупки | Цена продажи**")
+        uploaded = st.file_uploader("Шаг 1: Выберите файл вашей таблицы на телефоне/компьютере", type=["csv", "xlsx"])
+        
+        # ИСПРАВЛЕНО: Теперь после выбора файла появляется кнопка импорта
+        if uploaded is not None:
+            st.info(f"📁 Файл «{uploaded.name}» успешно выбран и готов к обработке.")
+            if st.button("🚀 Шаг 2: Загрузить товары из этого файла на склад", type="primary", use_container_width=True):
+                try:
+                    if uploaded.name.endswith(".xlsx"):
+                        df = pd.read_excel(uploaded, engine="openpyxl")
+                    else:
+                        try:
+                            df = pd.read_csv(uploaded, encoding="utf-8")
+                        except:
+                            uploaded.seek(0)
+                            df = pd.read_csv(uploaded, sep=None, engine="python", encoding="cp1251")
 
-                imported = 0
-                today = datetime.now().strftime("%Y-%m-%d")
-                for _, row in df.iterrows():
-                    try:
-                        name = str(row.iloc[0]).strip()
-                        if not name or name.lower() == "nan": continue
-                        qty = int(float(str(row.iloc[1]).replace(" ", "").replace(",", ".")))
-                        cost = float(str(row.iloc[2]).replace(" ", "").replace(",", "."))
-                        price = float(str(row.iloc[3]).replace(" ", "").replace(",", "."))
-                        if db_save_product_smart(name, qty, cost, price, today):
-                            imported += 1
-                    except: continue
-                if imported > 0:
-                    st.success(f"🚀 Успешно загружено и сохранено в Supabase! Товаров: {imported}")
-                    st.rerun()
-            except Exception as e:
-                st.error(f"Не удалось прочитать файл: {e}")
+                    imported = 0
+                    errors_count = 0
+                    today = datetime.now().strftime("%Y-%m-%d")
+                    
+                    for idx, row in df.iterrows():
+                        try:
+                            name = str(row.iloc[0]).strip()
+                            if not name or name.lower() == "nan": continue
+                            qty = int(float(str(row.iloc[1]).replace(" ", "").replace(",", ".")))
+                            cost = float(str(row.iloc[2]).replace(" ", "").replace(",", "."))
+                            price = float(str(row.iloc[3]).replace(" ", "").replace(",", "."))
+                            
+                            if db_save_product_smart(name, qty, cost, price, today):
+                                imported += 1
+                        except Exception as line_error:
+                            errors_count += 1
+                            continue
+                            
+                    if imported > 0:
+                        st.success(f"🎉 Успешно сохранено в базу Supabase! Товаров добавлено/обновлено: {imported}")
+                        if errors_count > 0:
+                            st.warning(f"⚠️ Внимание: {errors_count} строк в файле имели неверный формат и были пропущены. Проверьте, чтобы везде были только цифры.")
+                        st.rerun()
+                    else:
+                        st.error("❌ Ни одной строчки из файла не удалось загрузить. Проверьте структуру колонок: Название | Количество | Закупка | Продажа.")
+                except Exception as e:
+                    st.error(f"Не удалось прочитать файл. Ошибка: {e}")
 
         st.markdown("---")
         col_add, col_edit = st.columns(2)
@@ -183,7 +201,7 @@ if menu == "📦 Склад / Поступление":
             df_display["Себестоимость партии (сом)"] = df_display["Себестоимость партии (сом)"].map('{:,.2f} сом'.format)
             st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-# ==================== 💰 ВКЛАДКА 2: КАССА / ПРОДАЖИ (С КОРЗИНОЙ) ====================
+# ==================== 💰 ВКЛАДКА 2: КАССА / ПРОДАЖИ ====================
 elif menu == "💰 Касса / Продажи":
     st.header("Оформить продажу (Корзина покупок)")
     stock_res = supabase.table("products").select("*").gt("qty", 0).execute()
@@ -193,7 +211,6 @@ elif menu == "💰 Касса / Продажи":
         st.warning("На складе нет доступных товаров для продажи")
     else:
         col_form, col_cart = st.columns([1.2, 1])
-        
         with col_form:
             st.subheader("🛒 Выбор товаров")
             unique_names = sorted(list(set(row["name"].capitalize() for row in stock_res.data)))
@@ -251,38 +268,33 @@ elif menu == "💰 Касса / Продажи":
                     down_payment = c_r1.number_input("💵 Первоначальный взнос (наличные сейчас), сом", min_value=0.0, max_value=float(total_cart_sum), value=0.0)
                     months = c_r2.number_input("📅 Срок рассрочки (месяцев)", min_value=1, max_value=24, value=6)
             
-            # Логика математики рассрочки
-            net_debt = total_cart_sum - down_payment # Остаток долга ДО наценки
-            markup_percent = months * 3 # 3% за каждый месяц
-            markup_amount = net_debt * (markup_percent / 100) # Сумма наценки
-            total_with_markup = net_debt + markup_amount # Итого долг С наценкой
-            monthly_payment = round(total_with_markup / months) if months > 0 else 0 # Ежемесячный платеж
+            net_debt = total_cart_sum - down_payment
+            markup_percent = months * 3
+            markup_amount = net_debt * (markup_percent / 100)
+            total_with_markup = net_debt + markup_amount
+            monthly_payment = round(total_with_markup / months) if months > 0 else 0
 
             if pay_method == "Рассрочка":
                 st.info(f"💡 Расчет: Сумма чека {total_cart_sum} - Взнос {down_payment} = На остаток {net_debt} сом калькулируется наценка {markup_percent}% (+{markup_amount:.0f} сом). Всего в рассрочку: **{total_with_markup:.0f} сом**.")
                 st.markdown(f"### 🔥 Ежемесячный платеж: **{monthly_payment:,.0f} сом / месяц** на {months} мес.")
 
             if st.button("🚀 Оформить и провести сделку", type="primary", use_container_width=True):
-                # Проводим каждый товар из корзины в базу
                 sale_group_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
                 for item in st.session_state.cart:
-                    # Уменьшаем склад
                     p_res = supabase.table("products").select("qty").eq("id", item["batch_id"]).execute().data[0]
                     new_qty = int(p_res["qty"]) - item["qty"]
                     supabase.table("products").update({"qty": new_qty}).eq("id", item["batch_id"]).execute()
                     
-                    # Пишем продажу
                     t_cost = item["qty"] * item["cost"]
                     supabase.table("sales").insert({
                         "id": sale_group_id, "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "day": datetime.now().strftime("%Y-%m-%d"),
                         "name": f"{item['name']} (приход {item['batch_date']})", "pure_name": item["pure_name"], "batch_date": item["batch_date"],
                         "qty": item["qty"], "total_sale": item["total"], "total_cost": t_cost, "profit": item["total"] - t_cost,
-                        "payment": pay_method, "down_payment": down_payment if item == st.session_state.cart[0] else 0.0, # Пишем взнос только на первую запись чека
+                        "payment": pay_method, "down_payment": down_payment if item == st.session_state.cart[0] else 0.0,
                         "credit_balance": total_with_markup if item == st.session_state.cart[0] else 0.0,
                         "client_id": client_id
                     }).execute()
                 
-                # Создаем график платежей в Supabase
                 if pay_method == "Рассрочка" and client_id:
                     for m in range(1, months + 1):
                         due_date = (datetime.now() + timedelta(days=30 * m)).strftime("%Y-%m-%d")
@@ -295,7 +307,7 @@ elif menu == "💰 Касса / Продажи":
                 st.success("🎉 Сделка и график платежей успешно зафиксированы в облаке Supabase!")
                 st.rerun()
 
-# ==================== 👥 НОВАЯ ВКЛАДКА 3: БАЗА КЛИЕНТОВ И РАССЧЕТЫ ====================
+# ==================== 👥 ВКАЛАДКА 3: БАЗА КЛИЕНТОВ ====================
 elif menu == "👥 База клиентов":
     st.header("👥 Управление клиентами и рассрочками")
     
@@ -305,7 +317,7 @@ elif menu == "👥 База клиентов":
         with st.form("client_reg", clear_on_submit=True):
             fio = st.text_input("ФИО Клиента").strip()
             phone = st.text_input("Номер телефона").strip()
-            passport = st.text_area("Паспортные данные (Серия, номер, кем выдан)").strip()
+            passport = st.text_area("Паспортные данные").strip()
             if st.form_submit_button("Зарегистрировать"):
                 if fio:
                     supabase.table("clients").insert({"fio": fio, "phone": phone, "passport": passport}).execute()
@@ -328,7 +340,6 @@ elif menu == "👥 База клиентов":
         selected_client_name = st.selectbox("Выберите клиента для просмотра задолженности", list(client_opts.keys()))
         c_id = client_opts[selected_client_name]
         
-        # Загружаем график платежей этого клиента
         payments_res = supabase.table("credit_payments").select("*").eq("client_id", c_id).order("due_date").execute()
         
         if not payments_res.data:
@@ -337,7 +348,6 @@ elif menu == "👥 База клиентов":
             st.markdown("### 📅 Календарный график платежей")
             df_p = pd.DataFrame(payments_res.data)
             
-            # Показываем таблицу платежей с возможностью внести оплату
             for idx, row in df_p.iterrows():
                 col_p1, col_p2, col_p3, col_p4 = st.columns([2, 2, 2, 1.5])
                 col_p1.write(f"📅 Срок: **{row['due_date']}**")
@@ -350,10 +360,8 @@ elif menu == "👥 База клиентов":
                         new_paid = float(row['amount_paid']) + pay_amount
                         new_status = "Оплачен" if new_paid >= float(row['amount_expected']) else "Частично"
                         
-                        # Обновляем статус платежа
                         supabase.table("credit_payments").update({"amount_paid": new_paid, "status": new_status}).eq("id", row['id']).execute()
                         
-                        # Автоматически добавляем эти деньги в кассу наличных
                         supabase.table("cash_operations").insert({
                             "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "amount": pay_amount, "comment": f"Погашение рассрочки от {selected_client_name}"
                         }).execute()
@@ -371,12 +379,11 @@ elif menu == "💵 Баланс Кассы":
     down_payments_cash = sum(float(s.get("down_payment", 0.0)) for s in sales_res.data if s.get("payment") == "Рассрочка")
     credit_debts = sum(float(s.get("credit_balance", 0.0)) for s in sales_res.data if s.get("payment") == "Рассрочка")
     
-    # Считаем сколько уже фактически оплачено по графикам
     paid_credits_res = supabase.table("credit_payments").select("amount_paid").execute()
     total_credit_collected = sum(float(p["amount_paid"]) for p in paid_credits_res.data)
     
     manual_cash_flow = sum(float(op['amount']) for op in ops_res.data)
-    current_cash_in_hand = full_cash_sales + down_payments_cash + manual_cash_flow # Оплаты из графиков уже внутри manual_cash_flow
+    current_cash_in_hand = full_cash_sales + down_payments_cash + manual_cash_flow
     
     c1, c2, c3 = st.columns(3)
     c1.metric("💵 Наличные в кассе (сейчас в наличии)", f"{current_cash_in_hand:,.2f} сом")
@@ -409,7 +416,9 @@ elif menu == "📊 Отчеты по дням":
         df = pd.DataFrame(sales_all.data)
         df['day'] = pd.to_datetime(df['day']).dt.date
         
+        st.subheader("🔍 Выберите период для просмотра отчета")
         date_range = st.date_input("Диапазон дат", value=(df['day'].min(), df['day'].max()))
+        
         if isinstance(date_range, tuple) and len(date_range) == 2:
             start_date, end_date = date_range
             filtered_df = df[(df['day'] >= start_date) & (df['day'] <= end_date)]
@@ -449,7 +458,6 @@ elif menu == "🧾 Оплата контрагентам":
         df_pay = pd.DataFrame(payments_res.data).drop(columns=["id", "created_at"], errors="ignore")
         st.dataframe(df_pay, use_container_width=True, hide_index=True)
 
-    # Скрытый блок полной очистки
     st.markdown("---")
     with st.expander("⚙️ Системные настройки (Очистка базы данных)"):
         confirm_check = st.checkbox("Я точно хочу удалить ВСЕ данные из Supabase")
