@@ -34,7 +34,7 @@ menu = st.sidebar.radio("Разделы", [
 ])
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Магазин Сулайман-Тоо • v5.1 (Supabase)")
+st.sidebar.caption("Магазин Сулайман-Тоо • v5.2 (Supabase)")
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 def db_get_stock():
@@ -58,18 +58,6 @@ def db_get_stock():
         total_cost += qty * cost
         total_retail += qty * price
     return pd.DataFrame(flat), total_qty, total_cost, total_retail
-
-def db_save_product_smart(name, qty, cost, price, date_str):
-    name = name.strip().lower()
-    if not name:
-        return False
-    existing = supabase.table("products").select("*").eq("name", name).eq("date", date_str).execute()
-    if existing.data:
-        row_id = existing.data[0]["id"]
-        supabase.table("products").update({"qty": qty, "cost": cost, "price": price}).eq("id", row_id).execute()
-    else:
-        supabase.table("products").insert({"name": name, "qty": qty, "cost": cost, "price": price, "date": date_str}).execute()
-    return True
 
 # ==================== 📦 ВКЛАДКА 1: СКЛАД ====================
 if menu == "📦 Склад / Поступление":
@@ -98,47 +86,59 @@ if menu == "📦 Склад / Поступление":
         st.write("💡 Порядок столбцов в файле: **Название товара | Количество | Цена закупки | Цена продажи**")
         uploaded = st.file_uploader("Шаг 1: Выберите файл вашей таблицы на телефоне/компьютере", type=["csv", "xlsx"])
         
-        # ИСПРАВЛЕНО: Теперь после выбора файла появляется кнопка импорта
         if uploaded is not None:
-            st.info(f"📁 Файл «{uploaded.name}» успешно выбран и готов к обработке.")
+            st.info(f"📁 Файл «{uploaded.name}» успешно выбран.")
             if st.button("🚀 Шаг 2: Загрузить товары из этого файла на склад", type="primary", use_container_width=True):
-                try:
-                    if uploaded.name.endswith(".xlsx"):
-                        df = pd.read_excel(uploaded, engine="openpyxl")
-                    else:
-                        try:
-                            df = pd.read_csv(uploaded, encoding="utf-8")
-                        except:
-                            uploaded.seek(0)
-                            df = pd.read_csv(uploaded, sep=None, engine="python", encoding="cp1251")
+                with st.spinner("⏳ Синхронизация с облаком Supabase... Пожалуйста, подождите."):
+                    try:
+                        if uploaded.name.endswith(".xlsx"):
+                            df = pd.read_excel(uploaded, engine="openpyxl")
+                        else:
+                            try:
+                                df = pd.read_csv(uploaded, encoding="utf-8")
+                            except:
+                                uploaded.seek(0)
+                                df = pd.read_csv(uploaded, sep=None, engine="python", encoding="cp1251")
 
-                    imported = 0
-                    errors_count = 0
-                    today = datetime.now().strftime("%Y-%m-%d")
-                    
-                    for idx, row in df.iterrows():
-                        try:
-                            name = str(row.iloc[0]).strip()
-                            if not name or name.lower() == "nan": continue
-                            qty = int(float(str(row.iloc[1]).replace(" ", "").replace(",", ".")))
-                            cost = float(str(row.iloc[2]).replace(" ", "").replace(",", "."))
-                            price = float(str(row.iloc[3]).replace(" ", "").replace(",", "."))
+                        today = datetime.now().strftime("%Y-%m-%d")
+                        
+                        # Шаг 1: Скачиваем текущие товары за сегодня, чтобы не делать миллион запросов
+                        existing_res = supabase.table("products").select("id", "name").eq("date", today).execute()
+                        existing_map = {row["name"]: row["id"] for row in existing_res.data}
+                        
+                        # Списки для пакетной (быстрой) обработки
+                        insert_list = []
+                        
+                        for idx, row in df.iterrows():
+                            try:
+                                name_raw = str(row.iloc[0]).strip().lower()
+                                if not name_raw or name_raw == "nan": continue
+                                qty_raw = int(float(str(row.iloc[1]).replace(" ", "").replace(",", ".")))
+                                cost_raw = float(str(row.iloc[2]).replace(" ", "").replace(",", "."))
+                                price_raw = float(str(row.iloc[3]).replace(" ", "").replace(",", "."))
+                                
+                                # Если товар за сегодня уже есть в базе — обновляем его прямо на месте
+                                if name_raw in existing_map:
+                                    supabase.table("products").update({
+                                        "qty": qty_raw, "cost": cost_raw, "price": price_raw
+                                    }).eq("id", existing_map[name_raw]).execute()
+                                else:
+                                    # Если товара нет — добавляем в пакет для массовой вставки
+                                    insert_list.append({
+                                        "name": name_raw, "qty": qty_raw, "cost": cost_raw, "price": price_raw, "date": today
+                                    })
+                            except:
+                                continue
+                        
+                        # Шаг 2: Отправляем весь пакет НОВЫХ товаров ОДНИМ запросом (Bulk Insert)
+                        if insert_list:
+                            supabase.table("products").insert(insert_list).execute()
                             
-                            if db_save_product_smart(name, qty, cost, price, today):
-                                imported += 1
-                        except Exception as line_error:
-                            errors_count += 1
-                            continue
-                            
-                    if imported > 0:
-                        st.success(f"🎉 Успешно сохранено в базу Supabase! Товаров добавлено/обновлено: {imported}")
-                        if errors_count > 0:
-                            st.warning(f"⚠️ Внимание: {errors_count} строк в файле имели неверный формат и были пропущены. Проверьте, чтобы везде были только цифры.")
+                        st.success("🎉 Облачный склад Supabase успешно синхронизирован!")
                         st.rerun()
-                    else:
-                        st.error("❌ Ни одной строчки из файла не удалось загрузить. Проверьте структуру колонок: Название | Количество | Закупка | Продажа.")
-                except Exception as e:
-                    st.error(f"Не удалось прочитать файл. Ошибка: {e}")
+                        
+                    except Exception as e:
+                        st.error(f"Произошла ошибка при чтении или отправке файла: {e}")
 
         st.markdown("---")
         col_add, col_edit = st.columns(2)
@@ -152,7 +152,12 @@ if menu == "📦 Склад / Поступление":
                 if st.form_submit_button("Сохранить в облако"):
                     if name:
                         today = datetime.now().strftime("%Y-%m-%d")
-                        db_save_product_smart(name, qty, cost, price, today)
+                        # Для ручного штучного ввода оставим простую быструю проверку
+                        existing = supabase.table("products").select("*").eq("name", name).eq("date", today).execute()
+                        if existing.data:
+                            supabase.table("products").update({"qty": qty, "cost": cost, "price": price}).eq("id", existing.data[0]["id"]).execute()
+                        else:
+                            supabase.table("products").insert({"name": name, "qty": qty, "cost": cost, "price": price, "date": today}).execute()
                         st.success("Успешно сохранено!")
                         st.rerun()
 
@@ -434,6 +439,104 @@ elif menu == "📊 Отчеты по дням":
             st.markdown("---")
             st.subheader("📋 Детализация продаж")
             st.dataframe(filtered_df[["date", "name", "qty", "total_sale", "payment"]], use_container_width=True, hide_index=True)
+
+            st.markdown("---")
+            st.subheader("✏️ Редактировать или Отменить продажу из детализации")
+            sales_options = {f"[{s['date']}] {s['name'].capitalize()} — {s['qty']}шт = {float(s['total_sale']):.0f} сом ({s['payment']})": idx for idx, s in enumerate(sales_all.data)}
+            
+            selected_sale_label = st.selectbox("Выберите операцию из списка для исправления/удаления", list(sales_options.keys()))
+            target_sale_idx = sales_options[selected_sale_label]
+            sale_to_edit = sales_all.data[target_sale_idx]
+            
+            with st.form("edit_sale_form"):
+                col_e1, col_e2, col_e3, col_e4 = st.columns(4)
+                old_qty = int(sale_to_edit["qty"])
+                old_price_one = float(sale_to_edit["total_sale"] / old_qty)
+                
+                new_s_qty = col_e1.number_input("Исправить Количество (шт)", min_value=1, value=old_qty)
+                new_s_price = col_e2.number_input("Исправить Цену за 1 шт (сом)", min_value=0.0, value=old_price_one)
+                new_s_payment = col_e3.selectbox("Способ оплаты", ["Наличные", "Рассрочка"], index=0 if sale_to_edit["payment"] == "Наличные" else 1)
+                
+                new_total_sum = new_s_qty * new_s_price
+                new_s_down = 0.0
+                if new_s_payment == "Рассрочка":
+                    old_down = float(sale_to_edit.get("down_payment", 0.0))
+                    new_s_down = col_e4.number_input("Первоначальный взнос (сом)", min_value=0.0, max_value=float(new_total_sum), value=min(old_down, new_total_sum))
+                
+                new_credit_balance = new_total_sum - new_s_down
+                
+                btn_save_sale, btn_del_sale = st.columns(2)
+                click_save = btn_save_sale.form_submit_button("💾 Сохранить изменения в продаже", type="primary")
+                click_del = btn_del_sale.form_submit_button("❌ Полностью отменить эту продажу", type="secondary")
+                
+                if click_save:
+                    st.session_state.pending_edit_sale = {
+                        "id": sale_to_edit["id"], "old_qty": old_qty, "new_qty": new_s_qty,
+                        "new_price": new_s_price, "new_total": new_total_sum, "payment": new_s_payment,
+                        "down_payment": new_s_down, "credit_balance": new_credit_balance,
+                        "pure_name": sale_to_edit["pure_name"], "batch_date": sale_to_edit["batch_date"],
+                        "total_cost": float(sale_to_edit["total_cost"])
+                    }
+                    st.rerun()
+                
+                if click_del:
+                    st.session_state.show_sale_delete = {
+                        "sale_id": sale_to_edit["id"], "name": sale_to_edit['name'], "qty": sale_to_edit['qty'], 
+                        "total": sale_to_edit['total_sale'], "pure_name": sale_to_edit["pure_name"], "batch_date": sale_to_edit["batch_date"]
+                    }
+                    st.rerun()
+
+            if "pending_edit_sale" in st.session_state and st.session_state.pending_edit_sale:
+                pe = st.session_state.pending_edit_sale
+                @st.dialog("📋 Подтверждение изменения продажи")
+                def confirm_edit_dialog():
+                    st.warning("Внимательно проверьте исправленные данные:")
+                    st.markdown(f"### Новая сумма сделки: {pe['new_total']:.2f} сом ({pe['payment']})")
+                    col_y, col_n = st.columns(2)
+                    if col_y.button("✅ Да, сохранить изменения", type="primary", use_container_width=True):
+                        qty_diff = pe["new_qty"] - pe["old_qty"]
+                        exist_b = supabase.table("products").select("*").eq("name", pe["pure_name"]).eq("date", pe["batch_date"]).execute()
+                        if exist_b.data:
+                            new_stock = int(exist_b.data[0]["qty"]) - qty_diff
+                            supabase.table("products").update({"qty": new_stock}).eq("id", exist_b.data[0]["id"]).execute()
+                        
+                        single_cost = pe["total_cost"] / pe["old_qty"]
+                        new_cost = pe["new_qty"] * single_cost
+                        
+                        supabase.table("sales").update({
+                            "qty": pe["new_qty"], "total_sale": pe["new_total"], "total_cost": new_cost,
+                            "profit": pe["new_total"] - new_cost, "payment": pe["payment"],
+                            "down_payment": pe["down_payment"], "credit_balance": pe["credit_balance"]
+                        }).eq("id", pe["id"]).execute()
+                        
+                        st.session_state.pending_edit_sale = None
+                        st.success("Изменения записаны в Supabase!")
+                        st.rerun()
+                    if col_n.button("Отмена", type="secondary", use_container_width=True):
+                        st.session_state.pending_edit_sale = None
+                        st.rerun()
+                confirm_edit_dialog()
+
+            if "show_sale_delete" in st.session_state and st.session_state.show_sale_delete:
+                s_del = st.session_state.show_sale_delete
+                @st.dialog("⚠️ Отмена и удаление продажи")
+                def delete_sale_dialog():
+                    st.error("Отменить эту сделку в Supabase?")
+                    col_y, col_n = st.columns(2)
+                    if col_y.button("🔥 Да, отменить", type="primary", use_container_width=True):
+                        exist_b = supabase.table("products").select("*").eq("name", s_del["pure_name"]).eq("date", s_del["batch_date"]).execute()
+                        if exist_b.data:
+                            new_stock = int(exist_b.data[0]["qty"]) + int(s_del["qty"])
+                            supabase.table("products").update({"qty": new_stock}).eq("id", exist_b.data[0]["id"]).execute()
+                        
+                        supabase.table("sales").delete().eq("id", s_del["sale_id"]).execute()
+                        st.session_state.show_sale_delete = None
+                        st.success("Удалено из облака!")
+                        st.rerun()
+                    if col_n.button("Назад", type="secondary", use_container_width=True):
+                        st.session_state.show_sale_delete = None
+                        st.rerun()
+                delete_sale_dialog()
 
 # ==================== 🧾 ВКЛАДКА 6: ОПЛАТА КОНТРАГЕНТАМ ====================
 elif menu == "🧾 Оплата контрагентам":
