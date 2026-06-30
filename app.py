@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import io
 from supabase import create_client, Client
 
@@ -18,26 +18,30 @@ except Exception as e:
     st.stop()
 
 st.set_page_config(page_title="Магазин Сулайман-Тоо", layout="wide", page_icon="🏬")
-st.title("🏬 Магазин «Сулайман-Тоо» — Облачный Учет")
+st.title("🏬 Магазин «Сулайман-Тоо» — Учет и Рассрочки")
+
+# Инициализация корзины покупок в сессии
+if "cart" not in st.session_state:
+    st.session_state.cart = []
 
 # ==================== БОКОВАЯ ПАНЕЛЬ ====================
 menu = st.sidebar.radio("Разделы", [
     "📦 Склад / Поступление", 
     "💰 Касса / Продажи", 
+    "👥 База клиентов",
     "💵 Баланс Кассы",
     "📊 Отчеты по дням",
     "🧾 Оплата контрагентам"
 ])
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Магазин Сулайман-Тоо • v4.0 (Supabase)")
+st.sidebar.caption("Магазин Сулайман-Тоо • v5.0 (Supabase)")
 
-# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ БАЗЫ ДАННЫХ ====================
+# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 def db_get_stock():
     response = supabase.table("products").select("*").gt("qty", 0).execute()
     flat = []
     total_qty = total_cost = total_retail = 0.0
-    
     for row in response.data:
         qty = int(row["qty"])
         cost = float(row["cost"])
@@ -61,7 +65,6 @@ def db_save_product_smart(name, qty, cost, price, date_str):
     if not name:
         return False
     existing = supabase.table("products").select("*").eq("name", name).eq("date", date_str).execute()
-    
     if existing.data:
         row_id = existing.data[0]["id"]
         supabase.table("products").update({"qty": qty, "cost": cost, "price": price}).eq("id", row_id).execute()
@@ -72,7 +75,6 @@ def db_save_product_smart(name, qty, cost, price, date_str):
 # ==================== 📦 ВКЛАДКА 1: СКЛАД ====================
 if menu == "📦 Склад / Поступление":
     st.header("Управление складом")
-
     df_stock, total_qty, total_cost, total_retail = db_get_stock()
 
     c1, c2, c3 = st.columns(3)
@@ -90,7 +92,6 @@ if menu == "📦 Склад / Поступление":
             df_print["Продажа (сом)"] = df_print["Продажа (сом)"].map('{:,.2f} сом'.format)
             df_print["Себестоимость партии (сом)"] = df_print["Себестоимость партии (сом)"].map('{:,.2f} сом'.format)
             st.table(df_print)
-            st.markdown(f"**Итого на складе:** {int(total_qty)} шт. на общую сумму закупки **{total_cost:,.2f} сом**")
         else:
             st.info("Склад пуст")
     else:
@@ -101,11 +102,7 @@ if menu == "📦 Склад / Поступление":
                 if uploaded.name.endswith(".xlsx"):
                     df = pd.read_excel(uploaded)
                 else:
-                    try:
-                        df = pd.read_csv(uploaded, encoding="utf-8")
-                    except:
-                        uploaded.seek(0)
-                        df = pd.read_csv(uploaded, sep=None, engine="python", encoding="cp1251")
+                    df = pd.read_csv(uploaded, encoding="utf-8")
 
                 imported = 0
                 today = datetime.now().strftime("%Y-%m-%d")
@@ -126,7 +123,6 @@ if menu == "📦 Склад / Поступление":
                 st.error(f"Не удалось прочитать файл: {e}")
 
         st.markdown("---")
-
         col_add, col_edit = st.columns(2)
         with col_add:
             st.subheader("➕ Добавить товар вручную")
@@ -139,7 +135,7 @@ if menu == "📦 Склад / Поступление":
                     if name:
                         today = datetime.now().strftime("%Y-%m-%d")
                         db_save_product_smart(name, qty, cost, price, today)
-                        st.success("Успешно отправлено в Supabase!")
+                        st.success("Успешно сохранено!")
                         st.rerun()
 
         with col_edit:
@@ -147,11 +143,7 @@ if menu == "📦 Склад / Поступление":
             if df_stock.empty:
                 st.info("Товаров пока нет")
             else:
-                options = {}
-                for _, row in df_stock.iterrows():
-                    label = f"{row['Товар']} | Приход: {row['Дата поступления']} | Остаток: {row['В наличии (шт)']} шт."
-                    options[label] = row["id"]
-
+                options = {f"{row['Товар']} | Приход: {row['Дата поступления']} | Остаток: {row['В наличии (шт)']} шт.": row["id"] for _, row in df_stock.iterrows()}
                 selected = st.selectbox("Выберите запись для изменения", list(options.keys()))
                 batch_id = options[selected]
                 item_data = supabase.table("products").select("*").eq("id", batch_id).execute().data[0]
@@ -166,7 +158,6 @@ if menu == "📦 Склад / Поступление":
                         supabase.table("products").update({"qty": new_qty, "cost": new_cost, "price": new_price}).eq("id", batch_id).execute()
                         st.success("Изменено в базе!")
                         st.rerun()
-
                     if c_btn2.form_submit_button("🗑️ Удалить партию", type="secondary"):
                         st.session_state.delete_batch_id = batch_id
                         st.session_state.delete_batch_label = selected
@@ -177,13 +168,8 @@ if menu == "📦 Склад / Поступление":
             @st.dialog("⚠️ Подтверждение удаления")
             def delete_batch_dialog():
                 st.error(f"Удалить выбранную партию из базы?\n{st.session_state.delete_batch_label}")
-                col_y, col_n = st.columns(2)
-                if col_y.button("🗑️ Да, удалить", type="primary", use_container_width=True):
+                if st.button("🗑️ Да, удалить", type="primary", use_container_width=True):
                     supabase.table("products").delete().eq("id", db_id).execute()
-                    st.session_state.delete_batch_id = None
-                    st.success("Удалено из облака!")
-                    st.rerun()
-                if col_n.button("Отмена", type="secondary", use_container_width=True):
                     st.session_state.delete_batch_id = None
                     st.rerun()
             delete_batch_dialog()
@@ -197,87 +183,185 @@ if menu == "📦 Склад / Поступление":
             df_display["Себестоимость партии (сом)"] = df_display["Себестоимость партии (сом)"].map('{:,.2f} сом'.format)
             st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-# ==================== 💰 ВКЛАДКА 2: КАССА / ПРОДАЖИ ====================
+# ==================== 💰 ВКЛАДКА 2: КАССА / ПРОДАЖИ (С КОРЗИНОЙ) ====================
 elif menu == "💰 Касса / Продажи":
-    st.header("Оформить продажу")
+    st.header("Оформить продажу (Корзина покупок)")
     stock_res = supabase.table("products").select("*").gt("qty", 0).execute()
+    clients_res = supabase.table("clients").select("*").order("fio").execute()
     
     if not stock_res.data:
         st.warning("На складе нет доступных товаров для продажи")
     else:
-        unique_names = sorted(list(set(row["name"].capitalize() for row in stock_res.data)))
-        sel_display = st.selectbox("🔍 Выберите товар для продажи", unique_names)
-        p_key = sel_display.lower()
+        col_form, col_cart = st.columns([1.2, 1])
         
-        batches_options = {}
-        for row in stock_res.data:
-            if row["name"] == p_key:
-                batches_options[f"Поступление от {row['date']} (Остаток: {row['qty']} шт., Цена: {row['price']} сом)"] = row["id"]
-                
-        selected_batch_label = st.selectbox("📦 С какой даты поступления списать товар?", list(batches_options.keys()))
-        batch_id = batches_options[selected_batch_label]
-        chosen_batch = supabase.table("products").select("*").eq("id", batch_id).execute().data[0]
-        
-        sqty = st.number_input("Количество для продажи (шт)", min_value=1, max_value=int(chosen_batch["qty"]), value=1)
-        custom_price = st.number_input("💰 Цена продажи за 1 шт (можно изменить), сом", min_value=0.0, value=float(chosen_batch['price']))
-        pay_method = st.radio("💳 Способ оплаты", ["Наличные", "Рассрочка"], horizontal=True)
-        
-        down_payment = 0.0
-        total_sale_sum = sqty * custom_price
-        if pay_method == "Рассрочка":
-            down_payment = st.number_input("💵 Первоначальный взнос (в кассу наличными), сом", min_value=0.0, max_value=float(total_sale_sum), value=0.0, step=100.0)
-        credit_balance = total_sale_sum - down_payment
+        with col_form:
+            st.subheader("🛒 Выбор товаров")
+            unique_names = sorted(list(set(row["name"].capitalize() for row in stock_res.data)))
+            sel_display = st.selectbox("🔍 Выберите товар", unique_names)
+            p_key = sel_display.lower()
+            
+            batches_options = {f"Поступление от {row['date']} (Остаток: {row['qty']} шт., Цена: {row['price']} сом)": row["id"] for row in stock_res.data if row["name"] == p_key}
+            selected_batch_label = st.selectbox("📦 Выберите партию", list(batches_options.keys()))
+            batch_id = batches_options[selected_batch_label]
+            chosen_batch = supabase.table("products").select("*").eq("id", batch_id).execute().data[0]
+            
+            sqty = st.number_input("Количество для продажи (шт)", min_value=1, max_value=int(chosen_batch["qty"]), value=1)
+            custom_price = st.number_input("💰 Цена продажи за 1 шт, сом", min_value=0.0, value=float(chosen_batch['price']))
+            
+            if st.button("➕ Добавить в чек", use_container_width=True):
+                st.session_state.cart.append({
+                    "batch_id": batch_id, "name": sel_display, "batch_date": chosen_batch["date"],
+                    "qty": sqty, "price": custom_price, "total": sqty * custom_price, "cost": float(chosen_batch["cost"]), "pure_name": p_key
+                })
+                st.success(f"Товар {sel_display} добавлен в чек!")
+                st.rerun()
 
-        if st.button("💵 Оформить продажу", type="primary"):
-            st.session_state.show_confirmation = {
-                "batch_id": batch_id, "p_key": p_key, "name": sel_display, "batch_date": chosen_batch["date"],
-                "qty": sqty, "price": custom_price, "total": total_sale_sum, "payment": pay_method,
-                "down_payment": down_payment, "credit_balance": credit_balance, "cost": float(chosen_batch["cost"])
-            }
+        with col_cart:
+            st.subheader("🧾 Текущий чек (Корзина)")
+            if not st.session_state.cart:
+                st.info("Чек пока пуст. Добавьте товары слева.")
+                total_cart_sum = 0.0
+            else:
+                cart_df = pd.DataFrame(st.session_state.cart)
+                st.dataframe(cart_df[["name", "qty", "price", "total"]], use_container_width=True, hide_index=True)
+                total_cart_sum = cart_df["total"].sum()
+                st.markdown(f"### 💵 Сумма по чеку: {total_cart_sum:,.2f} сом")
+                if st.button("🗑️ Очистить чек"):
+                    st.session_state.cart = []
+                    st.rerun()
 
-        if "show_confirmation" in st.session_state and st.session_state.show_confirmation:
-            conf = st.session_state.show_confirmation
-            @st.dialog("📋 Подтверждение операции")
-            def confirm_dialog():
-                st.warning("Внимательно проверьте данные перед продажей:")
-                st.markdown(f"**Товар:** {conf['name']} (Поступление: {conf['batch_date']})")
-                st.markdown(f"**Количество:** {conf['qty']} шт. | **Цена за шт:** {conf['price']:.2f} сом")
-                st.markdown(f"### Общая сумма сделки: {conf['total']:.2f} сом")
-                
-                if conf['payment'] == "Рассрочка":
-                    st.markdown(f"**Способ оплаты:** 📝 Рассрочка")
-                    st.markdown(f"👉 **Вносится наличными сейчас:** {conf['down_payment']:.2f} сом")
-                    st.markdown(f"👉 **Остаток долга в рассрочку:** {conf['credit_balance']:.2f} сом")
+        if st.session_state.cart:
+            st.markdown("---")
+            st.subheader("💳 Параметры оплаты чека")
+            pay_method = st.radio("Способ оплаты чека", ["Наличные", "Рассрочка"], horizontal=True)
+            
+            down_payment = 0.0
+            months = 1
+            client_id = None
+            
+            if pay_method == "Рассрочка":
+                if not clients_res.data:
+                    st.error("❌ В базе данных нет клиентов! Сначала добавьте клиента в разделе «База клиентов».")
                 else:
-                    st.markdown(f"**Способ оплаты:** 💵 Полные Наличные")
-                
-                col_yes, col_no = st.columns(2)
-                if col_yes.button("✅ Да, подтверждаю продажу", type="primary", use_container_width=True):
-                    # Списываем со склада
-                    new_q = int(chosen_batch["qty"]) - conf["qty"]
-                    supabase.table("products").update({"qty": new_q}).eq("id", conf["batch_id"]).execute()
+                    client_opts = {f"{c['fio']} ({c['phone']})": c["id"] for c in clients_res.data}
+                    sel_client = st.selectbox("👤 Выберите клиента из базы", list(client_opts.keys()))
+                    client_id = client_opts[sel_client]
+                    
+                    c_r1, c_r2 = st.columns(2)
+                    down_payment = c_r1.number_input("💵 Первоначальный взнос (наличные сейчас), сом", min_value=0.0, max_value=float(total_cart_sum), value=0.0)
+                    months = c_r2.number_input("📅 Срок рассрочки (месяцев)", min_value=1, max_value=24, value=6)
+            
+            # Логика математики рассрочки
+            net_debt = total_cart_sum - down_payment # Остаток долга ДО наценки
+            markup_percent = months * 3 # 3% за каждый месяц
+            markup_amount = net_debt * (markup_percent / 100) # Сумма наценки
+            total_with_markup = net_debt + markup_amount # Итого долг С наценкой
+            monthly_payment = round(total_with_markup / months) if months > 0 else 0 # Ежемесячный платеж
+
+            if pay_method == "Рассрочка":
+                st.info(f"💡 Расчет: Сумма чека {total_cart_sum} - Взнос {down_payment} = На остаток {net_debt} сом калькулируется наценка {markup_percent}% (+{markup_amount:.0f} сом). Всего в рассрочку: **{total_with_markup:.0f} сом**.")
+                st.markdown(f"### 🔥 Ежемесячный платеж: **{monthly_payment:,.0f} сом / месяц** на {months} мес.")
+
+            if st.button("🚀 Оформить и провести сделку", type="primary", use_container_width=True):
+                # Проводим каждый товар из корзины в базу
+                sale_group_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
+                for item in st.session_state.cart:
+                    # Уменьшаем склад
+                    p_res = supabase.table("products").select("qty").eq("id", item["batch_id"]).execute().data[0]
+                    new_qty = int(p_res["qty"]) - item["qty"]
+                    supabase.table("products").update({"qty": new_qty}).eq("id", item["batch_id"]).execute()
                     
                     # Пишем продажу
-                    sale_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
-                    t_cost = conf["qty"] * conf["cost"]
-                    
+                    t_cost = item["qty"] * item["cost"]
                     supabase.table("sales").insert({
-                        "id": sale_id, "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        "day": datetime.now().strftime("%Y-%m-%d"), "name": f"{conf['name']} (приход {conf['batch_date']})",
-                        "pure_name": conf["p_key"], "batch_date": conf["batch_date"], "qty": conf["qty"],
-                        "total_sale": conf["total"], "total_cost": t_cost, "profit": conf["total"] - t_cost,
-                        "payment": conf["payment"], "down_payment": conf["down_payment"], "credit_balance": conf["credit_balance"]
+                        "id": sale_group_id, "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "day": datetime.now().strftime("%Y-%m-%d"),
+                        "name": f"{item['name']} (приход {item['batch_date']})", "pure_name": item["pure_name"], "batch_date": item["batch_date"],
+                        "qty": item["qty"], "total_sale": item["total"], "total_cost": t_cost, "profit": item["total"] - t_cost,
+                        "payment": pay_method, "down_payment": down_payment if item == st.session_state.cart[0] else 0.0, # Пишем взнос только на первую запись чека
+                        "credit_balance": total_with_markup if item == st.session_state.cart[0] else 0.0,
+                        "client_id": client_id
                     }).execute()
-                    
-                    st.session_state.show_confirmation = None
-                    st.success("🎉 Продажа сохранена в Supabase!")
-                    st.rerun()
-                if col_no.button("❌ Отмена", type="secondary", use_container_width=True):
-                    st.session_state.show_confirmation = None
-                    st.rerun()
-            confirm_dialog()
+                
+                # Создаем график платежей в Supabase
+                if pay_method == "Рассрочка" and client_id:
+                    for m in range(1, months + 1):
+                        due_date = (datetime.now() + timedelta(days=30 * m)).strftime("%Y-%m-%d")
+                        supabase.table("credit_payments").insert({
+                            "sale_id": sale_group_id, "client_id": client_id, "due_date": due_date,
+                            "amount_expected": monthly_payment, "amount_paid": 0.0, "status": "Не оплачен"
+                        }).execute()
+                        
+                st.session_state.cart = []
+                st.success("🎉 Сделка и график платежей успешно зафиксированы в облаке Supabase!")
+                st.rerun()
 
-# ==================== 💵 ВКЛАДКА 3: БАЛАНС КАССЫ ====================
+# ==================== 👥 НОВАЯ ВКЛАДКА 3: БАЗА КЛИЕНТОВ И РАССЧЕТЫ ====================
+elif menu == "👥 База клиентов":
+    st.header("👥 Управление клиентами и рассрочками")
+    
+    col_c1, col_c2 = st.columns([1, 1.5])
+    with col_c1:
+        st.subheader("➕ Регистрация нового клиента")
+        with st.form("client_reg", clear_on_submit=True):
+            fio = st.text_input("ФИО Клиента").strip()
+            phone = st.text_input("Номер телефона").strip()
+            passport = st.text_area("Паспортные данные (Серия, номер, кем выдан)").strip()
+            if st.form_submit_button("Зарегистрировать"):
+                if fio:
+                    supabase.table("clients").insert({"fio": fio, "phone": phone, "passport": passport}).execute()
+                    st.success("Клиент успешно добавлен в базу!")
+                    st.rerun()
+                    
+    with col_c2:
+        st.subheader("📋 Список клиентов в базе")
+        c_all = supabase.table("clients").select("*").order("fio").execute()
+        if not c_all.data:
+            st.info("База клиентов пуста.")
+        else:
+            df_c = pd.DataFrame(c_all.data).drop(columns=["created_at"], errors="ignore")
+            st.dataframe(df_c, use_container_width=True, hide_index=True)
+            
+    st.markdown("---")
+    st.subheader("🔍 Карточка клиента и График платежей")
+    if c_all.data:
+        client_opts = {c["fio"]: c["id"] for c in c_all.data}
+        selected_client_name = st.selectbox("Выберите клиента для просмотра задолженности", list(client_opts.keys()))
+        c_id = client_opts[selected_client_name]
+        
+        # Загружаем график платежей этого клиента
+        payments_res = supabase.table("credit_payments").select("*").eq("client_id", c_id).order("due_date").execute()
+        
+        if not payments_res.data:
+            st.info("У этого клиента нет активных рассрочек.")
+        else:
+            st.markdown("### 📅 Календарный график платежей")
+            df_p = pd.DataFrame(payments_res.data)
+            
+            # Показываем таблицу платежей с возможностью внести оплату
+            for idx, row in df_p.iterrows():
+                col_p1, col_p2, col_p3, col_p4 = st.columns([2, 2, 2, 1.5])
+                col_p1.write(f"📅 Срок: **{row['due_date']}**")
+                col_p2.write(f"💵 Должно быть: **{row['amount_expected']} сом**")
+                col_p3.write(f"✅ Оплачено: **{row['amount_paid']} сом** ({row['status']})")
+                
+                if row['status'] != 'Оплачен':
+                    pay_amount = col_p4.number_input("Внести сумму (сом)", min_value=0.0, max_value=float(row['amount_expected'] - row['amount_paid']), value=float(row['amount_expected'] - row['amount_paid']), key=f"pay_{row['id']}")
+                    if col_p4.button("💳 Принять платеж", key=f"btn_{row['id']}"):
+                        new_paid = float(row['amount_paid']) + pay_amount
+                        new_status = "Оплачен" if new_paid >= float(row['amount_expected']) else "Частично"
+                        
+                        # Обновляем статус платежа
+                        supabase.table("credit_payments").update({"amount_paid": new_paid, "status": new_status}).eq("id", row['id']).execute()
+                        
+                        # Автоматически добавляем эти деньги в кассу наличных
+                        supabase.table("cash_operations").insert({
+                            "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "amount": pay_amount, "comment": f"Погашение рассрочки от {selected_client_name}"
+                        }).execute()
+                        
+                        st.success("Платеж успешно принят в кассу!")
+                        st.rerun()
+
+# ==================== 💵 ВКЛАДКА 4: БАЛАНС КАССЫ ====================
 elif menu == "💵 Баланс Кассы":
     st.header("💵 Состояние кассы магазина")
     sales_res = supabase.table("sales").select("total_sale, profit, payment, down_payment, credit_balance").execute()
@@ -287,12 +371,16 @@ elif menu == "💵 Баланс Кассы":
     down_payments_cash = sum(float(s.get("down_payment", 0.0)) for s in sales_res.data if s.get("payment") == "Рассрочка")
     credit_debts = sum(float(s.get("credit_balance", 0.0)) for s in sales_res.data if s.get("payment") == "Рассрочка")
     
+    # Считаем сколько уже фактически оплачено по графикам
+    paid_credits_res = supabase.table("credit_payments").select("amount_paid").execute()
+    total_credit_collected = sum(float(p["amount_paid"]) for p in paid_credits_res.data)
+    
     manual_cash_flow = sum(float(op['amount']) for op in ops_res.data)
-    current_cash_in_hand = full_cash_sales + down_payments_cash + manual_cash_flow
+    current_cash_in_hand = full_cash_sales + down_payments_cash + manual_cash_flow # Оплаты из графиков уже внутри manual_cash_flow
     
     c1, c2, c3 = st.columns(3)
-    c1.metric("💵 Наличные в кассе (включая взносы)", f"{current_cash_in_hand:,.2f} сом")
-    c2.metric("📝 Чистый долг в рассрочке", f"{credit_debts:,.2f} сом")
+    c1.metric("💵 Наличные в кассе (сейчас в наличии)", f"{current_cash_in_hand:,.2f} сом")
+    c2.metric("📝 Чистый долг клиентов по рассрочкам", f"{credit_debts - total_credit_collected:,.2f} сом")
     c3.metric("📈 Всего чистая прибыль магазина", f"{sum(float(s['profit']) for s in sales_res.data):,.2f} сом")
     
     st.markdown("---")
@@ -307,17 +395,10 @@ elif menu == "💵 Баланс Кассы":
             supabase.table("cash_operations").insert({
                 "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "amount": actual, "comment": comment or op_type
             }).execute()
-            st.success("Операция по кассе успешно записана!")
+            st.success("Операция проведена!")
             st.rerun()
-            
-    history_res = supabase.table("cash_operations").select("*").order("id", desc=True).limit(20).execute()
-    if history_res.data:
-        st.markdown("---")
-        st.subheader("📜 История движений по кассе (Последние 20)")
-        df_ops = pd.DataFrame(history_res.data).drop(columns=["id", "created_at"], errors="ignore")
-        st.dataframe(df_ops, use_container_width=True, hide_index=True)
 
-# ==================== 📊 ВКЛАДКА 4: ОТЧЕТЫ ====================
+# ==================== 📊 ВКЛАДКА 5: ОТЧЕТЫ ====================
 elif menu == "📊 Отчеты по дням":
     st.header("Аналитика и история продаж")
     sales_all = supabase.table("sales").select("*").execute()
@@ -328,9 +409,7 @@ elif menu == "📊 Отчеты по дням":
         df = pd.DataFrame(sales_all.data)
         df['day'] = pd.to_datetime(df['day']).dt.date
         
-        st.subheader("🔍 Выберите период для просмотра отчета")
         date_range = st.date_input("Диапазон дат", value=(df['day'].min(), df['day'].max()))
-        
         if isinstance(date_range, tuple) and len(date_range) == 2:
             start_date, end_date = date_range
             filtered_df = df[(df['day'] >= start_date) & (df['day'] <= end_date)]
@@ -342,171 +421,12 @@ elif menu == "📊 Отчеты по дням":
             c1, c2 = st.columns(2)
             c1.metric("💰 Общая Выручка за период", f"{filtered_df['total_sale'].sum():,.2f} сом")
             c2.metric("📈 Общая Чистая прибыль", f"{filtered_df['profit'].sum():,.2f} сом")
-            
-            if st.button("📥 Скачать этот отчет в Excel"):
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                    filtered_df.to_excel(writer, index=False, sheet_name="Продажи")
-                st.download_button("Нажмите здесь для загрузки файла", data=output.getvalue(), file_name=f"report_{datetime.now().strftime('%Y%m%d')}.xlsx")
 
             st.markdown("---")
-            st.subheader("📋 Таблицы детализации продаж за период")
-            tab1, tab2, tab3 = st.tabs(["Все продажи", "💵 Наличные", "📝 Рассрочка"])
-            
-            def render_sales_table_simple(dataframe, tab_name):
-                if dataframe.empty:
-                    st.write("Нет операций за этот период.")
-                    return
-                if tab_name == "credit":
-                    h1, h2, h3, h4, h5, h6 = st.columns([2, 3, 1, 1.5, 1.5, 1.5])
-                    h1.markdown("**Дата/Время**")
-                    h2.markdown("**Товар**")
-                    h3.markdown("**Кол-во**")
-                    h4.markdown("**Итого цена**")
-                    h5.markdown("**Перв. взнос**")
-                    h6.markdown("**Остаток долга**")
-                    st.markdown("---")
-                    for _, row in dataframe.iloc[::-1].iterrows():
-                        r1, r2, r3, r4, r5, r6 = st.columns([2, 3, 1, 1.5, 1.5, 1.5])
-                        r1.write(row['date'])
-                        r2.write(str(row['name']))
-                        r3.write(f"{row['qty']} шт.")
-                        r4.write(f"{float(row['total_sale']):,.2f} c.")
-                        r5.write(f"{float(row.get('down_payment', 0.0)):,.2f} c.")
-                        r6.write(f"{float(row.get('credit_balance', row['total_sale'])):,.2f} c.")
-                else:
-                    h1, h2, h3, h4, h5 = st.columns([2, 3, 1, 2, 2])
-                    h1.markdown("**Дата/Время**")
-                    h2.markdown("**Товар (Партия)**")
-                    h3.markdown("**Кол-во**")
-                    h4.markdown("**Сумма сделки**")
-                    h5.markdown("**Тип оплаты**")
-                    st.markdown("---")
-                    for _, row in dataframe.iloc[::-1].iterrows():
-                        r1, r2, r3, r4, r5 = st.columns([2, 3, 1, 2, 2])
-                        r1.write(row['date'])
-                        r2.write(str(row['name']))
-                        r3.write(f"{row['qty']} шт.")
-                        r4.write(f"{float(row['total_sale']):,.2f} c.")
-                        r5.write(row.get('payment', 'Наличные'))
+            st.subheader("📋 Детализация продаж")
+            st.dataframe(filtered_df[["date", "name", "qty", "total_sale", "payment"]], use_container_width=True, hide_index=True)
 
-            with tab1: render_sales_table_simple(filtered_df, "all")
-            with tab2: render_sales_table_simple(filtered_df[filtered_df['payment'] == 'Наличные'], "cash")
-            with tab3: render_sales_table_simple(filtered_df[filtered_df['payment'] == 'Рассрочка'], "credit")
-
-            # БЛОК РЕДАКТИРОВАНИЯ В САМОМ НИЗУ СТРАНИЦЫ
-            st.markdown("---")
-            st.subheader("✏️ Редактировать или Отменить продажу из детализации")
-            sales_options = {}
-            for idx, s in enumerate(sales_all.data):
-                label = f"[{s['date']}] {s['name'].capitalize()} — {s['qty']}шт = {float(s['total_sale']):.0f} сом ({s['payment']})"
-                sales_options[label] = idx
-            
-            selected_sale_label = st.selectbox("Выберите операцию из списка для исправления/удаления", list(sales_options.keys()))
-            target_sale_idx = sales_options[selected_sale_label]
-            sale_to_edit = sales_all.data[target_sale_idx]
-            
-            with st.form("edit_sale_form"):
-                col_e1, col_e2, col_e3, col_e4 = st.columns(4)
-                old_qty = int(sale_to_edit["qty"])
-                old_price_one = float(sale_to_edit["total_sale"] / old_qty)
-                
-                new_s_qty = col_e1.number_input("Исправить Количество (шт)", min_value=1, value=old_qty)
-                new_s_price = col_e2.number_input("Исправить Цену за 1 шт (сом)", min_value=0.0, value=old_price_one)
-                new_s_payment = col_e3.selectbox("Способ оплаты", ["Наличные", "Рассрочка"], index=0 if sale_to_edit["payment"] == "Наличные" else 1)
-                
-                new_total_sum = new_s_qty * new_s_price
-                new_s_down = 0.0
-                if new_s_payment == "Рассрочка":
-                    old_down = float(sale_to_edit.get("down_payment", 0.0))
-                    new_s_down = col_e4.number_input("Первоначальный взнос (сом)", min_value=0.0, max_value=float(new_total_sum), value=min(old_down, new_total_sum))
-                
-                new_credit_balance = new_total_sum - new_s_down
-                
-                btn_save_sale, btn_del_sale = st.columns(2)
-                click_save = btn_save_sale.form_submit_button("💾 Сохранить изменения в продаже", type="primary")
-                click_del = btn_del_sale.form_submit_button("❌ Полностью отменить эту продажу", type="secondary")
-                
-                if click_save:
-                    st.session_state.pending_edit_sale = {
-                        "id": sale_to_edit["id"], "old_qty": old_qty, "new_qty": new_s_qty,
-                        "new_price": new_s_price, "new_total": new_total_sum, "payment": new_s_payment,
-                        "down_payment": new_s_down, "credit_balance": new_credit_balance,
-                        "pure_name": sale_to_edit["pure_name"], "batch_date": sale_to_edit["batch_date"],
-                        "total_cost": float(sale_to_edit["total_cost"])
-                    }
-                    st.rerun()
-                
-                if click_del:
-                    st.session_state.show_sale_delete = {
-                        "sale_id": sale_to_edit["id"], "name": sale_to_edit['name'], "qty": sale_to_edit['qty'], 
-                        "total": sale_to_edit['total_sale'], "pure_name": sale_to_edit["pure_name"], "batch_date": sale_to_edit["batch_date"]
-                    }
-                    st.rerun()
-
-            # ПОП-АП диалог подтверждения редактирования
-            if "pending_edit_sale" in st.session_state and st.session_state.pending_edit_sale:
-                pe = st.session_state.pending_edit_sale
-                @st.dialog("📋 Подтверждение изменения продажи")
-                def confirm_edit_dialog():
-                    st.warning("Внимательно проверьте исправленные данные:")
-                    st.markdown(f"### Новая сумма сделки: {pe['new_total']:.2f} сом ({pe['payment']})")
-                    if pe['payment'] == "Рассрочка":
-                        st.markdown(f"👉 **Взнос:** {pe['down_payment']:.2f} сом | **Долг:** {pe['credit_balance']:.2f} сом")
-                    
-                    col_y, col_n = st.columns(2)
-                    if col_y.button("✅ Да, сохранить изменения", type="primary", use_container_width=True):
-                        qty_diff = pe["new_qty"] - pe["old_qty"]
-                        
-                        # Обновляем склад в Supabase
-                        exist_b = supabase.table("products").select("*").eq("name", pe["pure_name"]).eq("date", pe["batch_date"]).execute()
-                        if exist_b.data:
-                            new_stock = int(exist_b.data[0]["qty"]) - qty_diff
-                            supabase.table("products").update({"qty": new_stock}).eq("id", exist_b.data[0]["id"]).execute()
-                        
-                        single_cost = pe["total_cost"] / pe["old_qty"]
-                        new_cost = pe["new_qty"] * single_cost
-                        
-                        # Пишем изменения в Supabase
-                        supabase.table("sales").update({
-                            "qty": pe["new_qty"], "total_sale": pe["new_total"], "total_cost": new_cost,
-                            "profit": pe["new_total"] - new_cost, "payment": pe["payment"],
-                            "down_payment": pe["down_payment"], "credit_balance": pe["credit_balance"]
-                        }).eq("id", pe["id"]).execute()
-                        
-                        st.session_state.pending_edit_sale = None
-                        st.success("Изменения записаны в Supabase!")
-                        st.rerun()
-                    if col_n.button("Отмена", type="secondary", use_container_width=True):
-                        st.session_state.pending_edit_sale = None
-                        st.rerun()
-                confirm_edit_dialog()
-
-            # ПОП-АП диалог удаления
-            if "show_sale_delete" in st.session_state and st.session_state.show_sale_delete:
-                s_del = st.session_state.show_sale_delete
-                @st.dialog("⚠️ Отмена и удаление продажи")
-                def delete_sale_dialog():
-                    st.error("Отменить эту сделку в Supabase?")
-                    col_y, col_n = st.columns(2)
-                    if col_y.button("🔥 Да, отменить", type="primary", use_container_width=True):
-                        # Возвращаем на склад
-                        exist_b = supabase.table("products").select("*").eq("name", s_del["pure_name"]).eq("date", s_del["batch_date"]).execute()
-                        if exist_b.data:
-                            new_stock = int(exist_b.data[0]["qty"]) + int(s_del["qty"])
-                            supabase.table("products").update({"qty": new_stock}).eq("id", exist_b.data[0]["id"]).execute()
-                        
-                        # Стираем продажу
-                        supabase.table("sales").delete().eq("id", s_del["sale_id"]).execute()
-                        st.session_state.show_sale_delete = None
-                        st.success("Удалено из облака!")
-                        st.rerun()
-                    if col_n.button("Назад", type="secondary", use_container_width=True):
-                        st.session_state.show_sale_delete = None
-                        st.rerun()
-                delete_sale_dialog()
-
-# ==================== 🧾 ВКЛАДКА 5: ОПЛАТА КОНТРАГЕНТАМ ====================
+# ==================== 🧾 ВКЛАДКА 6: ОПЛАТА КОНТРАГЕНТАМ ====================
 elif menu == "🧾 Оплата контрагентам":
     st.header("Выплаты поставщикам и контрагентам")
     st.subheader("📤 Зафиксировать выплату")
@@ -523,28 +443,22 @@ elif menu == "🧾 Оплата контрагентам":
                 st.rerun()
 
     payments_res = supabase.table("supplier_payments").select("*").order("id", desc=True).execute()
-    st.markdown("---")
-    st.subheader("📜 История выплат контрагентам")
-    if not payments_res.data:
-        st.info("Выплат ещё не было")
-    else:
+    if payments_res.data:
+        st.markdown("---")
+        st.subheader("📜 История выплат контрагентам")
         df_pay = pd.DataFrame(payments_res.data).drop(columns=["id", "created_at"], errors="ignore")
-        df_display_pay = df_pay.copy()
-        df_display_pay["amount"] = df_display_pay["amount"].map('{:,.2f} сом'.format)
-        st.dataframe(df_display_pay, use_container_width=True, hide_index=True)
-        
-        total_paid = sum(float(p["amount"]) for p in payments_res.data)
-        st.metric("Всего выплачено контрагентам", f"{total_paid:,.2f} сом")
+        st.dataframe(df_pay, use_container_width=True, hide_index=True)
 
-    # Скрытый блок полной очистки (теперь чистит Supabase)
+    # Скрытый блок полной очистки
     st.markdown("---")
     with st.expander("⚙️ Системные настройки (Очистка базы данных)"):
-        st.warning("Внимание! Очистит все таблицы в облаке Supabase.")
         confirm_check = st.checkbox("Я точно хочу удалить ВСЕ данные из Supabase")
         if st.button("🔥 Запустить полную очистку системы", type="secondary", disabled=not confirm_check):
             supabase.table("products").delete().neq("id", 0).execute()
             supabase.table("sales").delete().neq("id", "0").execute()
             supabase.table("cash_operations").delete().neq("id", 0).execute()
             supabase.table("supplier_payments").delete().neq("id", 0).execute()
+            supabase.table("credit_payments").delete().neq("id", 0).execute()
+            supabase.table("clients").delete().neq("id", 0).execute()
             st.success("Облачная база полностью сброшена!")
             st.rerun()
