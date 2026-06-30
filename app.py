@@ -276,32 +276,55 @@ elif menu == "💰 Касса / Продажи":
                 st.info(f"💡 Расчет: Сумма чека {total_cart_sum} - Взнос {down_payment} = На остаток {net_debt} сом калькулируется наценка {markup_percent}% (+{markup_amount:.0f} сом). Всего в рассрочку: **{total_with_markup:.0f} сом**.")
                 st.markdown(f"### 🔥 Ежемесячный платеж: **{monthly_payment:,.0f} сом / месяц** на {months} мес.")
 
-            if st.button("🚀 Оформить и провести сделку", type="primary", use_container_width=True):
+           if st.button("🚀 Оформить и провести сделку", type="primary", use_container_width=True):
                 sale_group_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
                 day_str = sale_date.strftime("%Y-%m-%d")
                 date_full_str = f"{day_str} {datetime.now().strftime('%H:%M')}"
                 
-                for item in st.session_state.cart:
+                cart_df = pd.DataFrame(st.session_state.cart)
+                total_cart_sum = cart_df["total"].sum()
+                
+                # Считаем пропорцию для каждого товара, чтобы база не ругалась на нули
+                for idx, item in enumerate(st.session_state.cart):
                     p_res = supabase.table("products").select("qty").eq("id", item["batch_id"]).execute().data[0]
                     new_qty = int(p_res["qty"]) - item["qty"]
                     supabase.table("products").update({"qty": new_qty}).eq("id", item["batch_id"]).execute()
                     
                     t_cost = item["qty"] * item["cost"]
+                    
+                    # Пропорциональное деление взноса и долга, чтобы не было конфликтов в базе
+                    item_share = item["total"] / total_cart_sum if total_cart_sum > 0 else 0
+                    item_down = round(down_payment * item_share, 2)
+                    item_credit = round(total_with_markup * item_share, 2)
+                    
                     supabase.table("sales").insert({
-                        "id": sale_group_id, "date": date_full_str, "day": day_str,
-                        "name": f"{item['name']} (приход {item['batch_date']})", "pure_name": item["pure_name"], "batch_date": item["batch_date"],
-                        "qty": item["qty"], "total_sale": item["total"], "total_cost": t_cost, "profit": item["total"] - t_cost,
-                        "payment": pay_method, "down_payment": down_payment if item == st.session_state.cart[0] else 0.0,
-                        "credit_balance": total_with_markup if item == st.session_state.cart[0] else 0.0,
+                        "id": sale_group_id, 
+                        "date": date_full_str, 
+                        "day": day_str,
+                        "name": f"{item['name']} (приход {item['batch_date']})", 
+                        "pure_name": item["pure_name"], 
+                        "batch_date": item["batch_date"],
+                        "qty": item["qty"], 
+                        "total_sale": item["total"], 
+                        "total_cost": t_cost, 
+                        "profit": item["total"] - t_cost,
+                        "payment": pay_method, 
+                        "down_payment": item_down,
+                        "credit_balance": item_credit,
                         "client_id": client_id
                     }).execute()
                 
+                # Создаем график платежей (только один раз для всей группы продажи)
                 if pay_method == "Рассрочка" and client_id:
                     for m in range(1, months + 1):
                         due_date = (sale_date + timedelta(days=30 * m)).strftime("%Y-%m-%d")
                         supabase.table("credit_payments").insert({
-                            "sale_id": sale_group_id, "client_id": client_id, "due_date": due_date,
-                            "amount_expected": monthly_payment, "amount_paid": 0.0, "status": "Не оплачен"
+                            "sale_id": sale_group_id, 
+                            "client_id": client_id, 
+                            "due_date": due_date,
+                            "amount_expected": monthly_payment, 
+                            "amount_paid": 0.0, 
+                            "status": "Не оплачен"
                         }).execute()
                         
                 st.session_state.cart = []
