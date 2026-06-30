@@ -34,7 +34,7 @@ menu = st.sidebar.radio("Разделы", [
 ])
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Магазин Сулайман-Тоо • v5.7 (Supabase)")
+st.sidebar.caption("Магазин Сулайман-Тоо • v5.8 (Supabase)")
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 def db_get_stock():
@@ -276,7 +276,7 @@ elif menu == "💰 Касса / Продажи":
                 st.info(f"💡 Расчет: Сумма чека {total_cart_sum} - Взнос {down_payment} = На остаток {net_debt} сом калькулируется наценка {markup_percent}% (+{markup_amount:.0f} сом). Всего в рассрочку: **{total_with_markup:.0f} сом**.")
                 st.markdown(f"### 🔥 Ежемесячный платеж: **{monthly_payment:,.0f} сом / месяц** на {months} мес.")
 
-           if st.button("🚀 Оформить и провести сделку", type="primary", use_container_width=True):
+            if st.button("🚀 Оформить и провести сделку", type="primary", use_container_width=True):
                 sale_group_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
                 day_str = sale_date.strftime("%Y-%m-%d")
                 date_full_str = f"{day_str} {datetime.now().strftime('%H:%M')}"
@@ -284,7 +284,6 @@ elif menu == "💰 Касса / Продажи":
                 cart_df = pd.DataFrame(st.session_state.cart)
                 total_cart_sum = cart_df["total"].sum()
                 
-                # Считаем пропорцию для каждого товара, чтобы база не ругалась на нули
                 for idx, item in enumerate(st.session_state.cart):
                     p_res = supabase.table("products").select("qty").eq("id", item["batch_id"]).execute().data[0]
                     new_qty = int(p_res["qty"]) - item["qty"]
@@ -292,39 +291,23 @@ elif menu == "💰 Касса / Продажи":
                     
                     t_cost = item["qty"] * item["cost"]
                     
-                    # Пропорциональное деление взноса и долга, чтобы не было конфликтов в базе
                     item_share = item["total"] / total_cart_sum if total_cart_sum > 0 else 0
                     item_down = round(down_payment * item_share, 2)
                     item_credit = round(total_with_markup * item_share, 2)
                     
                     supabase.table("sales").insert({
-                        "id": sale_group_id, 
-                        "date": date_full_str, 
-                        "day": day_str,
-                        "name": f"{item['name']} (приход {item['batch_date']})", 
-                        "pure_name": item["pure_name"], 
-                        "batch_date": item["batch_date"],
-                        "qty": item["qty"], 
-                        "total_sale": item["total"], 
-                        "total_cost": t_cost, 
-                        "profit": item["total"] - t_cost,
-                        "payment": pay_method, 
-                        "down_payment": item_down,
-                        "credit_balance": item_credit,
-                        "client_id": client_id
+                        "id": sale_group_id, "date": date_full_str, "day": day_str,
+                        "name": f"{item['name']} (приход {item['batch_date']})", "pure_name": item["pure_name"], "batch_date": item["batch_date"],
+                        "qty": item["qty"], "total_sale": item["total"], "total_cost": t_cost, "profit": item["total"] - t_cost,
+                        "payment": pay_method, "down_payment": item_down, "credit_balance": item_credit, "client_id": client_id
                     }).execute()
                 
-                # Создаем график платежей (только один раз для всей группы продажи)
                 if pay_method == "Рассрочка" and client_id:
                     for m in range(1, months + 1):
                         due_date = (sale_date + timedelta(days=30 * m)).strftime("%Y-%m-%d")
                         supabase.table("credit_payments").insert({
-                            "sale_id": sale_group_id, 
-                            "client_id": client_id, 
-                            "due_date": due_date,
-                            "amount_expected": monthly_payment, 
-                            "amount_paid": 0.0, 
-                            "status": "Не оплачен"
+                            "sale_id": sale_group_id, "client_id": client_id, "due_date": due_date,
+                            "amount_expected": monthly_payment, "amount_paid": 0.0, "status": "Не оплачен"
                         }).execute()
                         
                 st.session_state.cart = []
@@ -342,7 +325,7 @@ elif menu == "👥 База клиентов":
         with st.form("client_reg", clear_on_submit=True):
             fio = st.text_input("ФИО Клиента").strip()
             phone = st.text_input("Номер телефона").strip()
-            address = st.text_input("Адрес проживания").strip()  # Добавлен ввод адреса
+            address = st.text_input("Адрес проживания").strip()
             passport = st.text_area("Паспортные данные").strip()
             if st.form_submit_button("Зарегистрировать"):
                 if fio:
@@ -365,7 +348,7 @@ elif menu == "👥 База клиентов":
             with st.form("client_edit_form"):
                 new_fio = st.text_input("Изменить ФИО", value=str(client_to_update["fio"]))
                 new_phone = st.text_input("Изменить телефон", value=str(client_to_update["phone"] or ""))
-                new_address = st.text_input("Изменить адрес", value=str(client_to_update.get("address") or ""))  # Редактирование адреса
+                new_address = st.text_input("Изменить адрес", value=str(client_to_update.get("address") or ""))
                 new_passport = st.text_area("Изменить паспортные данные", value=str(client_to_update["passport"] or ""))
                 
                 if st.form_submit_button("💾 Сохранить изменения в карточке"):
@@ -385,9 +368,7 @@ elif menu == "👥 База клиентов":
         st.info("База клиентов пуста.")
     else:
         df_c = pd.DataFrame(c_all.data).drop(columns=["created_at"], errors="ignore")
-        # Переименование с учетом адреса
         df_c = df_c.rename(columns={"id": "ID", "fio": "ФИО Клиента", "phone": "Телефон", "address": "Адрес проживания", "passport": "Паспортные данные"})
-        # Если колонки нет в датафрейме (подстраховка), добавим пустышку
         if "Адрес проживания" not in df_c.columns:
             df_c["Адрес проживания"] = None
             
@@ -462,7 +443,7 @@ elif menu == "💵 Баланс Кассы":
             supabase.table("cash_operations").insert({
                 "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "amount": actual, "comment": comment or op_type
             }).execute()
-            st.success("Операция провена!")
+            st.success("Операция проведена!")
             st.rerun()
 
 # ==================== 📊 ВКЛАДКА 5: ОТЧЕТЫ ====================
