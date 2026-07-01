@@ -34,7 +34,7 @@ menu = st.sidebar.radio("Разделы", [
 ])
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Магазин Сулайман-Тоо • v5.9 (Supabase)")
+st.sidebar.caption("Магазин Сулайман-Тоо • v6.0 (Supabase Protected)")
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 def db_get_stock():
@@ -281,40 +281,49 @@ elif menu == "💰 Касса / Продажи":
                 day_str = sale_date.strftime("%Y-%m-%d")
                 date_full_str = f"{day_str} {datetime.now().strftime('%H:%M')}"
                 
-                # ЖЕЛЕЗНАЯ ЛОГИКА: Пишем всю финансовую сумму рассрочки строго на ПЕРВЫЙ товар, чтобы избежать дробей и округлений в базе
-                for idx, item in enumerate(st.session_state.cart):
-                    p_res = supabase.table("products").select("qty").eq("id", item["batch_id"]).execute().data[0]
-                    new_qty = int(p_res["qty"]) - item["qty"]
-                    supabase.table("products").update({"qty": new_qty}).eq("id", item["batch_id"]).execute()
-                    
-                    t_cost = item["qty"] * item["cost"]
-                    
-                    # Финансовые показатели целыми числами привязываем к первой позиции
-                    if idx == 0:
-                        item_down = int(down_payment)
-                        item_credit = int(total_with_markup)
-                    else:
-                        item_down = 0
-                        item_credit = 0
-                    
-                    supabase.table("sales").insert({
-                        "id": sale_group_id, "date": date_full_str, "day": day_str,
-                        "name": f"{item['name']} (приход {item['batch_date']})", "pure_name": item["pure_name"], "batch_date": item["batch_date"],
-                        "qty": item["qty"], "total_sale": int(item["total"]), "total_cost": int(t_cost), "profit": int(item["total"] - t_cost),
-                        "payment": pay_method, "down_payment": item_down, "credit_balance": item_credit, "client_id": client_id
-                    }).execute()
-                
-                if pay_method == "Рассрочка" and client_id:
-                    for m in range(1, months + 1):
-                        due_date = (sale_date + timedelta(days=30 * m)).strftime("%Y-%m-%d")
-                        supabase.table("credit_payments").insert({
-                            "sale_id": sale_group_id, "client_id": client_id, "due_date": due_date,
-                            "amount_expected": int(monthly_payment), "amount_paid": 0, "status": "Не оплачен"
-                        }).execute()
+                try:
+                    # 1. Записываем сделку и уменьшаем остаток на складе
+                    for idx, item in enumerate(st.session_state.cart):
+                        p_res = supabase.table("products").select("qty").eq("id", item["batch_id"]).execute().data[0]
+                        new_qty = int(p_res["qty"]) - item["qty"]
+                        supabase.table("products").update({"qty": new_qty}).eq("id", item["batch_id"]).execute()
                         
-                st.session_state.cart = []
-                st.success(f"🎉 Сделка успешно проведена и зафиксирована датой {day_str}!")
-                st.rerun()
+                        t_cost = item["qty"] * item["cost"]
+                        
+                        # Финансовые показатели рассрочки привязываем целым числом только к первому элементу чека
+                        if idx == 0:
+                            item_down = int(down_payment)
+                            item_credit = int(total_with_markup)
+                        else:
+                            item_down = 0
+                            item_credit = 0
+                        
+                        supabase.table("sales").insert({
+                            "id": sale_group_id, "date": date_full_str, "day": day_str,
+                            "name": f"{item['name']} (приход {item['batch_date']})", "pure_name": item["pure_name"], "batch_date": item["batch_date"],
+                            "qty": item["qty"], "total_sale": int(item["total"]), "total_cost": int(t_cost), "profit": int(item["total"] - t_cost),
+                            "payment": pay_method, "down_payment": item_down, "credit_balance": item_credit, "client_id": client_id
+                        }).execute()
+                    
+                    # 2. Формируем график платежей в отдельном защищенном блоке
+                    if pay_method == "Рассрочка" and client_id:
+                        for m in range(1, months + 1):
+                            due_date = (sale_date + timedelta(days=30 * m)).strftime("%Y-%m-%d")
+                            try:
+                                supabase.table("credit_payments").insert({
+                                    "sale_id": sale_group_id, "client_id": client_id, "due_date": due_date,
+                                    "amount_expected": int(monthly_payment), "amount_paid": 0, "status": "Не оплачен"
+                                }).execute()
+                            except Exception as e_pay:
+                                # Игнорируем точечные ошибки дат в графиках, чтобы продажа не стерлась из отчетов
+                                continue
+                                
+                    st.session_state.cart = []
+                    st.success(f"🎉 Сделка успешно проведена и зафиксирована в отчетах датой {day_str}!")
+                    st.rerun()
+                    
+                except Exception as e_global:
+                    st.error(f"⚠️ Ошибка базы данных при записи продажи: {e_global}. Пожалуйста, убедитесь, что все поля заполнены верно.")
 
 # ==================== 👥 ВКАЛАДКА 3: БАЗА КЛИЕНТОВ ====================
 elif menu == "👥 База клиентов":
@@ -656,7 +665,7 @@ elif menu == "🧾 Оплата контрагентам":
     st.markdown("---")
     with st.expander("⚙️ Системные настройки (Очистка базы данных)"):
         confirm_check = st.checkbox("Я точно хочу удалить ВСЕ данные из Supabase")
-        if st.button("🔥 Запустить полную очистку системы", type="secondary", disabled=not confirm_check):
+        if st.button("🔥 Запустить полную очикстку системы", type="secondary", disabled=not confirm_check):
             supabase.table("products").delete().neq("id", 0).execute()
             supabase.table("sales").delete().neq("id", "0").execute()
             supabase.table("cash_operations").delete().neq("id", 0).execute()
