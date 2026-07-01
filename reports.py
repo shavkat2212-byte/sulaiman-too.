@@ -65,10 +65,34 @@ def show_reports_page():
         
         st.download_button(label="📥 Скачать этот отчёт в Excel", data=buffer.getvalue(), file_name="Otchet.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True)
         
+        # Подготовка таблицы для красивого вывода на сайте с новыми столбцами
         st.subheader("📋 Детализация основных продаж и договоров")
-        st.dataframe(filtered_df[["date", "name", "qty", "total_sale", "payment"]], use_container_width=True, hide_index=True)
+        display_web_df = filtered_df.copy()
+        
+        # Переименовываем базовые столбцы для понятности
+        display_web_df = display_web_df.rename(columns={
+            "date": "Дата и время",
+            "name": "Наименование товара / Договор",
+            "qty": "Кол-во",
+            "total_sale": "Стоимость (сом)",
+            "payment": "Тип оплаты",
+            "down_payment": "Взнос (Нал)",
+            "credit_balance": "Остаток долга (+наценка)"
+        })
+        
+        # Выводим на экран таблицу со всеми важными финансовыми столбцами
+        cols_to_display = [
+            "Дата и время", 
+            "Наименование товара / Договор", 
+            "Кол-во", 
+            "Стоимость (сом)", 
+            "Взнос (Нал)", 
+            "Остаток долга (+наценка)", 
+            "Тип оплаты"
+        ]
+        st.dataframe(display_web_df[cols_to_display], use_container_width=True, hide_index=True)
 
-    # ==================== 🧾 НОВЫЙ БЛОК: ОТЧЕТ ПО ПОСТУПЛЕНИЯМ РАССВРОЧКИ ====================
+    # ==================== 🧾 БЛОК: ОТЧЕТ ПО ПОСТУПЛЕНИЯМ РАССВРОЧКИ ====================
     st.markdown("---")
     st.subheader("💵 Поступления по рассрочкам (Оплаты клиентов за период)")
     if filtered_ops.empty:
