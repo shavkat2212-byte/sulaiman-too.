@@ -7,7 +7,10 @@ from database import supabase
 
 def show_reports_page():
     st.header("📊 Аналитика и история продаж")
+    
+    # Загружаем продажи и кассовые операции по погашению рассрочек
     sales_all = supabase.table("sales").select("*").order("date", desc=True).execute()
+    ops_res = supabase.table("cash_operations").select("*").order("date", desc=True).execute()
     
     if not sales_all.data:
         st.write("Продаж еще не было.")
@@ -15,25 +18,43 @@ def show_reports_page():
 
     df = pd.DataFrame(sales_all.data)
     df['day'] = pd.to_datetime(df['day']).dt.date
-    st.subheader("🔍 Выберите период")
+    
+    st.subheader("🔍 Выберите период для анализа")
     date_range = st.date_input("Диапазон дат", value=(df['day'].min(), df['day'].max()))
     
     if isinstance(date_range, tuple) and len(date_range) == 2:
         start_date, end_date = date_range
         filtered_df = df[(df['day'] >= start_date) & (df['day'] <= end_date)]
+        
+        # Фильтруем оплаты по рассрочкам для нижнего отчета
+        if ops_res.data:
+            df_ops_raw = pd.DataFrame(ops_res.data)
+            df_ops_raw['day'] = pd.to_datetime(df_ops_raw['date']).dt.date
+            filtered_ops = df_ops_raw[(df_ops_raw['day'] >= start_date) & (df_ops_raw['day'] <= end_date) & (df_ops_raw['comment'].str.contains("Погашение рассрочки", na=False))]
+        else:
+            filtered_ops = pd.DataFrame()
     else: 
         filtered_df = df
+        if ops_res.data:
+            df_ops_raw = pd.DataFrame(ops_res.data)
+            filtered_ops = df_ops_raw[df_ops_raw['comment'].str.contains("Погашение рассрочки", na=False)]
+        else:
+            filtered_ops = pd.DataFrame()
         
     if not filtered_df.empty:
+        # Считаем живую выручку: наличные продажи + первоначальные взносы + принятые платежи по рассрочкам за период!
         revenue_cash = filtered_df[filtered_df["payment"] == "Наличные"]["total_sale"].sum()
         revenue_down = filtered_df[filtered_df["payment"] == "Рассрочка"]["down_payment"].sum()
-        total_real_revenue = revenue_cash + revenue_down
+        revenue_collected = filtered_ops['amount'].sum() if not filtered_ops.empty else 0.0
+        
+        total_real_revenue = revenue_cash + revenue_down + revenue_collected
 
-        c1, c2 = st.columns(2)
-        c1.metric("💰 Живая Выручка (Нал + Взносы)", f"{total_real_revenue:,.2f} сом")
-        c2.metric("📈 Общая Чистая прибыль", f"{filtered_df['profit'].sum():,.2f} сом")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("💰 Живая Выручка (Нал + Взносы + Оплаты)", f"{total_real_revenue:,.2f} сом")
+        c2.metric("📈 Прибыль от заключенных сделок", f"{filtered_df['profit'].sum():,.2f} сом")
+        c3.metric("✅ Собрано оплат по рассрочкам за период", f"{revenue_collected:,.2f} сом")
 
-        st.markdown("### 🖨️ Печать и Экспорт")
+        st.markdown("### 🖨️ Печать и Экспорт основных продаж")
         excel_df = filtered_df.copy()
         excel_df["В рассрочку"] = excel_df.apply(lambda r: float(r["credit_balance"]) if r["payment"] == "Рассрочка" else 0.0, axis=1)
         excel_df = excel_df.rename(columns={"date": "Дата", "name": "Наименование", "qty": "Кол-во", "total_sale": "Сумма", "down_payment": "Взнос", "payment": "Оплата"})
@@ -43,9 +64,24 @@ def show_reports_page():
             excel_df[["Дата", "Наименование", "Кол-во", "Сумма", "Взнос", "В рассрочку", "Оплата"]].to_excel(writer, index=False)
         
         st.download_button(label="📥 Скачать этот отчёт в Excel", data=buffer.getvalue(), file_name="Otchet.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True)
+        
+        st.subheader("📋 Детализация основных продаж и договоров")
         st.dataframe(filtered_df[["date", "name", "qty", "total_sale", "payment"]], use_container_width=True, hide_index=True)
 
-    # ==================== 🛠️ ОБНОВЛЕННЫЙ БЛОК: УМНАЯ ОТМЕНА С ВОЗВРАТОМ НА СКЛАД ====================
+    # ==================== 🧾 НОВЫЙ БЛОК: ОТЧЕТ ПО ПОСТУПЛЕНИЯМ РАССВРОЧКИ ====================
+    st.markdown("---")
+    st.subheader("💵 Поступления по рассрочкам (Оплаты клиентов за период)")
+    if filtered_ops.empty:
+        st.info("За выбранный период платежей от клиентов по рассрочкам не поступало.")
+    else:
+        df_ops_view = filtered_ops.copy().rename(columns={
+            "date": "Дата и время платежа",
+            "amount": "Внесенная сумма (сом)",
+            "comment": "Информация о платеже"
+        })
+        st.dataframe(df_ops_view[["Дата и время платежа", "Внесенная сумма (сом)", "Информация о платеже"]], use_container_width=True, hide_index=True)
+
+    # ==================== 🛠️ БЛОК: УМНАЯ ОТМЕНА С ВОЗВРАТОМ НА СКЛАД ====================
     st.markdown("---")
     st.subheader("✏️ Редактировать или Отменить (Удалить) операцию")
     
@@ -101,7 +137,6 @@ def show_reports_page():
                 }
                 st.rerun()
 
-        # Диалог подтверждения редактирования
         if "pending_edit_sale" in st.session_state and st.session_state.pending_edit_sale:
             pe = st.session_state.pending_edit_sale
             @st.dialog("📋 Подтверждение изменения")
@@ -134,7 +169,6 @@ def show_reports_page():
                     st.rerun()
             confirm_edit_dialog()
 
-        # Диалог подтверждения удаления
         if "show_sale_delete" in st.session_state and st.session_state.show_sale_delete:
             s_del = st.session_state.show_sale_delete
             @st.dialog("⚠️ Отмена и удаление операции")
@@ -142,37 +176,26 @@ def show_reports_page():
                 st.error(f"Вы действительно хотите навсегда удалить эту запись из базы и вернуть товары на склад?\n\n{s_del['name']}")
                 col_y, col_n = st.columns(2)
                 if col_y.button("🔥 Да, удалить окончательно", type="primary", use_container_width=True):
-                    
-                    # 1. ЕСЛИ ЭТО БЫЛА НАЛИЧКА (Одиночный товар)
                     if s_del["pure_name"] != "рассрочка" and s_del["pure_name"] != "":
                         exist_b = supabase.table("products").select("*").eq("name", s_del["pure_name"]).eq("date", s_del["batch_date"]).execute()
                         if exist_b.data:
                             new_stock = int(exist_b.data[0]["qty"]) + int(s_del["qty"])
                             supabase.table("products").update({"qty": new_stock}).eq("id", exist_b.data[0]["id"]).execute()
-                    
-                    # 2. УМНАЯ ЛОГИКА ДЛЯ РАССРОЧКИ (Разбор строки товаров)
                     elif s_del["pure_name"] == "рассрочка":
-                        # Ищем текст внутри квадратных скобок договора [Товар1 (X шт.), Товар2 (Y шт.)]
                         match = re.search(r"\[(.*?)\]", s_del["name"])
                         if match:
-                            items_content = match.group(1)  # Получили "Товар1 (X шт.), Товар2 (Y шт.)"
-                            # Разделяем товары по запятой
+                            items_content = match.group(1)
                             individual_items = items_content.split(", ")
                             for item_str in individual_items:
-                                # Из каждой строки вытаскиваем Название и Количество с помощью регулярного выражения
                                 item_match = re.match(r"(.*?) \((\d+)\s*шт\.\)", item_str)
                                 if item_match:
-                                    t_name = item_match.group(1).strip().lower() # Имя товара строчными
-                                    t_qty = int(item_match.group(2)) # Количество для возврата
-                                    
-                                    # Находим этот товар в базе на складе (берём самую свежую партию)
+                                    t_name = item_match.group(1).strip().lower()
+                                    t_qty = int(item_match.group(2))
                                     prod_res = supabase.table("products").select("*").eq("name", t_name).order("date", desc=True).execute()
                                     if prod_res.data:
-                                        # Возвращаем штуки на склад
                                         updated_qty = int(prod_res.data[0]["qty"]) + t_qty
                                         supabase.table("products").update({"qty": updated_qty}).eq("id", prod_res.data[0]["id"]).execute()
                     
-                    # Удаляем саму операцию продажи и графики рассрочки
                     supabase.table("sales").delete().eq("id", s_del["sale_id"]).execute()
                     supabase.table("credit_payments").delete().eq("sale_id", s_del["sale_id"]).execute()
                     
