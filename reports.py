@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Отчеты и Аналитика
-# Версия программы: 1.3.2 (Исправление вывода старых номеров договоров №202607 на экране)
+# Версия программы: 1.3.4 (КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Исправлена формула расчета Валовой чистой прибыли)
 
 import streamlit as st
 import pandas as pd
@@ -33,11 +33,8 @@ def fix_contract_name_on_fly(name_str, date_str):
     if not name_str:
         return name_str
     
-    # Если в названии договора затесался баг №202607
     if "№202607" in str(name_str):
-        # Вытаскиваем только чистую дату ДД.ММ.ГГГГ из даты операции
         clean_date = format_any_date(date_str, include_time=False)
-        # Генерируем красивый номер на основе даты
         new_num = clean_date.replace(".", "")[:4]
         return str(name_str).replace("№202607", f"№{new_num}")
     return name_str
@@ -86,6 +83,7 @@ def show_reports_page():
                 except:
                     continue
         
+        # Разделение приходов для структуры кассы
         total_sales_cash = filtered_df[filtered_df['payment'] == 'Наличные']['total_sale'].sum()
         total_down_payments = filtered_df[filtered_df['payment'] == 'Рассрочка']['down_payment'].sum()
         
@@ -95,17 +93,23 @@ def show_reports_page():
                 if "Погашение рассрочки" in str(op.get("comment", "")):
                     total_credit_collected += float(op["amount"])
 
+        # Общий оборот кассы по факту живых денег
         total_revenue = total_sales_cash + total_down_payments + total_credit_collected
+        
+        # Себестоимость закупки проданного товара
         total_cost = filtered_df['total_cost'].sum()
-        total_profit = total_revenue - total_cost
+        
+        # === ИСПРАВЛЕННАЯ ЛОГИКА ПРИБЫЛИ ===
+        # Суммируем чистую прибыль (маржу), заложенную в каждую сделку (Цена продажи - Закупка)
+        total_profit = filtered_df['profit'].sum()
 
         st.markdown("---")
         m1, m2, m3 = st.columns(3)
-        m1.metric("💵 Общая выручка (Все приходы)", f"{int(total_revenue):,} сом")
-        m2.metric("📦 Себестоимость закупки", f"{int(total_cost):,} сом")
+        m1.metric("💵 Общий приход (Фактически в кассе)", f"{int(total_revenue):,} сом")
+        m2.metric("📦 Себестоимость закупки отгруженного", f"{int(total_cost):,} сом")
         m3.metric("📈 Валовая чистая прибыль", f"{int(total_profit):,} сом", delta=f"{int(total_profit)}")
 
-        with st.expander("📊 Развернутая детализация структуры выручки"):
+        with st.expander("📊 Развернутая детализация структуры выручки кассы"):
             c1, c2, c3 = st.columns(3)
             c1.info(f"🟢 Прямые продажи (Нал): \n**{int(total_sales_cash):,} сом**")
             c2.info(f"🔵 Первоначальные взносы: \n**{int(total_down_payments):,} сом**")
@@ -117,7 +121,6 @@ def show_reports_page():
         if not filtered_df.empty:
             report_display = []
             for _, row in filtered_df.iterrows():
-                # НАЛЕТУ ИСПРАВЛЯЕМ ТЕКСТ СТАРОГО ДОГОВОРА ДЛЯ ЭКРАНА
                 fixed_name = fix_contract_name_on_fly(row['name'], row['date'])
                 
                 report_display.append({
@@ -146,7 +149,7 @@ def show_reports_page():
                 df_display.drop(columns=["sale_id", "raw_payment"]).to_excel(writer, index=False, sheet_name='Отчет по продажам')
             
             st.download_button(
-                label="📥 Скачать данный отчет in Excel",
+                label="📥 Скачать данный отчет в Excel",
                 data=buffer.getvalue(),
                 file_name=f"Отчет_Сулайман_Тоо_{start_date}_to_{end_date}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -155,7 +158,7 @@ def show_reports_page():
             
             # БЛОК УМНОЙ ОТМЕНЫ
             st.markdown("---")
-            st.subheader("⚙️ Управление и отмена продаж")
+            st.subheader("⚙️ Management и отмена продаж")
             
             cancel_options = {f"{row['Дата операции']} | {row['Наименование договора / Товара']}": row for idx, row in df_display.iterrows()}
             selected_to_cancel = st.selectbox("🚫 Выберите операцию для её полной отмены и возврата остатков:", ["-- Не выбрано --"] + list(cancel_options.keys()))
