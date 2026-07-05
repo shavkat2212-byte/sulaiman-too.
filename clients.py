@@ -6,10 +6,7 @@ from database import supabase
 def show_clients_page():
     st.title("👥 Управление клиентами и рассрочками")
     
-    # Создаем две удобные вкладки
     tab_manage, tab_installments_window = st.tabs(["🗂️ База и Редактирование", "💳 Окно контроля рассрочек"])
-    
-    # Сразу загружаем всех клиентов из базы данных
     c_all = supabase.table("clients").select("*").order("fio").execute()
 
     # =========================================================================
@@ -62,7 +59,7 @@ def show_clients_page():
             st.dataframe(df_c[["ID", "ФИО Клиента", "Телефон", "Адрес проживания", "Паспортные данные"]], use_container_width=True, hide_index=True)
 
     # =========================================================================
-    # ВКЛАДКА 2: ПОЛНОЦЕННОЕ ОКНО КОНТРОЛЯ РАССРОЧЕК И ПЛАНИРОВАНИЯ
+    # ВКЛАДКА 2: ОКОНЧАТЕЛЬНОЕ ОКНО РАССЧЁТА ПРИБЫЛИ И ПЛАНОВЫХ ОТЧЁТОВ
     # =========================================================================
     with tab_installments_window:
         st.subheader("📋 Мониторинг договоров, Прибыли и Погашений")
@@ -71,54 +68,40 @@ def show_clients_page():
             st.info("В базе данных ещё нет клиентов.")
         else:
             try:
-                # Загружаем договора рассрочки
                 sales_res = supabase.table("sales").select("*").eq("payment", "Рассрочка").execute()
                 all_sales = sales_res.data if sales_res.data else []
-                
-                # Загружаем плановые платежи
                 payments_res = supabase.table("credit_payments").select("*").execute()
                 all_payments = payments_res.data if payments_res.data else []
             except Exception as e:
-                st.error(f"Ошибка загрузки данных из Supabase: {e}")
+                st.error(f"Ошибка Supabase: {e}")
                 all_sales, all_payments = [], []
 
             # -----------------------------------------------------------------
-            # 1. ГЛАВНЫЙ ОТЧЕТ: АНАЛИТИКА ДОГОВОРОВ С УЧЕТОМ ВЗНОСОВ И НАЦЕНОК
+            # 1. ГЛАВНЫЙ АНАЛИТИЧЕСКИЙ ОТЧЕТ ПО ПРИБЫЛИ И ДОГОВОРАМ
             # -----------------------------------------------------------------
             st.markdown("### 📊 Аналитика активных договоров рассрочки")
-            
             installments_summary = []
             
             for s in all_sales:
-                # Находим ФИО клиента
                 client_fio = "Неизвестный клиент"
                 for cl in c_all.data:
                     if cl["id"] == s["client_id"]:
                         client_fio = cl["fio"]
                         break
                 
-                # Платежи конкретно по этому договору (sale_id)
                 sale_payments = [p for p in all_payments if p["sale_id"] == s["id"]]
-                
-                # Сколько уже внесено по графику рассрочки
                 already_paid = sum(float(p.get("amount_paid", 0) or 0) for p in sale_payments)
-                
-                # Полная сумма долга с наценкой (credit_balance)
                 retail_with_markup = int(s.get("credit_balance", 0) or 0)
-                
-                # Текущий остаток долга по графику рассрочки
                 current_debt_left = retail_with_markup - already_paid
                 
-                # Ближайший платеж
                 unpaid_payments = [p for p in sale_payments if p["status"] != "Оплачен"]
                 monthly_payment_sum = int(unpaid_payments[0]["amount_expected"]) if unpaid_payments else 0
                 
-                # Данные по закупке, рознице и первичному взносу
-                cost_price = int(s.get("total_cost", 0) or 0)       # Себестоимость закупки товара
-                sale_price = int(s.get("total_sale", 0) or 0)       # Первоначальная цена продажи (без наценки)
-                down_pay = int(s.get("down_payment", 0) or 0)       # Первоначальный взнос (Нал на кассе)
+                cost_price = int(s.get("total_cost", 0) or 0)
+                sale_price = int(s.get("total_sale", 0) or 0)
+                down_pay = int(s.get("down_payment", 0) or 0)
                 
-                # Чистая прибыль с договора = (Первоначальный взнос + Полный возврат рассрочки с наценкой) - Закупка
+                # Прибыль = (Перв. взнос + Итоговая сумма рассрочки) - Закупка товаров
                 expected_profit = (down_pay + retail_with_markup) - cost_price
 
                 if current_debt_left > 0:
@@ -135,7 +118,7 @@ def show_clients_page():
                     })
 
             if not installments_summary:
-                st.info("На данный момент нет активных задолженностей по рассрочкам.")
+                st.info("На данный момент нет активных рассрочек.")
             else:
                 df_summary = pd.DataFrame(installments_summary)
                 st.dataframe(
@@ -147,7 +130,7 @@ def show_clients_page():
             st.write("---")
             
             # -----------------------------------------------------------------
-            # 2. ДВОЙНОЙ БЛОК ОТЧЕТОВ: ФАКТИЧЕСКИЕ И ПЛАНИРУЕМЫЕ ПЛАТЕЖИ
+            # 2. ФАКТИЧЕСКИЙ И ПЛАНИРУЕМЫЙ ОТЧЁТЫ ПО ПЕРИОДАМ
             # -----------------------------------------------------------------
             st.markdown("### 📅 Аналитика движений по периодам дат")
             
@@ -157,7 +140,6 @@ def show_clients_page():
             
             tab_fact, tab_plan = st.tabs(["💰 Фактически оплачено (Касса)", "⏳ Должны оплатить по плану"])
             
-            # Подвкладка фактических поступлений
             with tab_fact:
                 if st.button("🔍 Рассчитать фактические погашения", use_container_width=True):
                     try:
@@ -166,7 +148,7 @@ def show_clients_page():
                             filtered_ops = []
                             total_period_income = 0.0
                             for op in ops_res.data:
-                                if "Погашение рассрочки" in str(op.get("comment", "")):
+                                if "Погашение рассрочки" in str(op.get("comment", "")) or "Перв. взнос" in str(op.get("comment", "")):
                                     op_date_str = op["date"][:10]
                                     try:
                                         op_date = datetime.strptime(op_date_str, "%Y-%m-%d").date()
@@ -174,18 +156,17 @@ def show_clients_page():
                                             filtered_ops.append({
                                                 "Дата и время": op["date"],
                                                 "Сумма внесения (сом)": int(float(op["amount"])),
-                                                "Комментарий / Кто оплатил": op["comment"]
+                                                "Комментарий": op["comment"]
                                             })
                                             total_period_income += float(op["amount"])
                                     except: continue
                             if filtered_ops:
-                                st.success(f"Всего в кассу внесено живых денег за период: **{int(total_period_income):,} сом**")
+                                st.success(f"Всего денег получено за период: **{int(total_period_income):,} сом**")
                                 st.dataframe(pd.DataFrame(filtered_ops), use_container_width=True, hide_index=True)
                             else:
                                 st.info("За выбранный период фактических платежей не найдено.")
                     except Exception as e: st.error(f"Ошибка кассового отчета: {e}")
             
-            # Подвкладка ПЛАНИРУЕМЫХ платежей по графику
             with tab_plan:
                 if st.button("🗓️ Показать план ожидаемых оплат", use_container_width=True):
                     filtered_plan = []
@@ -196,29 +177,25 @@ def show_clients_page():
                             try:
                                 due_date_obj = datetime.strptime(p["due_date"], "%Y-%m-%d").date()
                                 if start_date <= due_date_obj <= end_date:
-                                    # Ищем имя клиента
                                     cl_name = "Неизвестно"
                                     for cl in c_all.data:
                                         if cl["id"] == p["client_id"]:
                                             cl_name = cl["fio"]
                                             break
-                                            
-                                    # Ищем остаток, который осталось доплатить по этому конкретному месяцу
                                     to_pay = int(p["amount_expected"] - p["amount_paid"])
                                     filtered_plan.append({
                                         "Плановая дата платежа": p["due_date"],
                                         "ФИО Клиента": cl_name,
                                         "Размер платежа (сом)": int(p["amount_expected"]),
                                         "Осталось доплатить (сом)": to_pay,
-                                        "Статус месяца": p["status"]
+                                        "Статус": p["status"]
                                     })
                                     total_expected_sum += to_pay
                             except: continue
                             
                     if filtered_plan:
-                        # Сортируем список по дате ожидания, чтобы шло по порядку календарных дней
                         df_plan_res = pd.DataFrame(filtered_plan).sort_values("Плановая дата платежа")
-                        st.warning(f"📉 Суммарный ожидаемый план оплат от клиентов на этот период: **{total_expected_sum:,} сом**")
+                        st.warning(f"📉 Ожидаемый приток денег по плану на период: **{total_expected_sum:,} сом**")
                         st.dataframe(df_plan_res, use_container_width=True, hide_index=True)
                     else:
                         st.info("На выбранный период плановых платежей нет.")
@@ -226,10 +203,9 @@ def show_clients_page():
             st.write("---")
 
             # -----------------------------------------------------------------
-            # 3. ДЕТАЛИЗАЦИЯ И ИНДИВИДУАЛЬНЫЙ ГРАФИК ВЫБРАННОГО КЛИЕНТА
+            # 3. ИНДИВИДУАЛЬНЫЙ ГРАФИК КЛИЕНТА
             # -----------------------------------------------------------------
             st.markdown("### 🔍 Карточка и индивидуальный график клиента")
-            
             debtor_opts = {cl["fio"]: cl["id"] for cl in c_all.data}
             selected_debtor_fio = st.selectbox("Выберите ФИО клиента для детального просмотра:", ["-- Выберите ФИО --"] + list(debtor_opts.keys()), key="debtor_view_sb")
             
@@ -238,13 +214,11 @@ def show_clients_page():
                 chosen_cl_sales = [s for s in all_sales if s["client_id"] == chosen_client_id]
                 
                 if chosen_cl_sales:
-                    st.markdown(f"🛍️ **Список оформленных договоров для:** {selected_debtor_fio}")
+                    st.markdown(f"🛍️ **Список договоров клиента:** {selected_debtor_fio}")
                     details_list = []
                     for idx, s in enumerate(chosen_cl_sales):
                         details_list.append({
-                            "№": idx + 1,
-                            "Дата оформления": s["date"][:10] if s.get("date") else "-",
-                            "Название договора": s["name"],
+                            "№": idx + 1, "Дата": s["date"][:10], "Договор": s["name"],
                             "Цена продажи (сом)": int(s.get("total_sale", 0)),
                             "Перв. взнос (сом)": int(s.get("down_payment", 0)),
                             "Долг + наценка (сом)": int(s.get("credit_balance", 0))
@@ -270,11 +244,7 @@ def show_clients_page():
                                     supabase.table("credit_payments").update({"amount_paid": new_paid, "status": new_status}).eq("id", p_row['id']).execute()
                                     supabase.table("cash_operations").insert({
                                         "date": datetime.now().strftime("%Y-%m-%d %H:%M"), 
-                                        "amount": pay_amount, 
-                                        "comment": f"Погашение рассрочки от {selected_debtor_fio}"
+                                        "amount": pay_amount, "comment": f"Погашение рассрочки от {selected_debtor_fio}"
                                     }).execute()
-                                    
-                                    st.success("Оплата успешно зафиксирована!")
+                                    st.success("Оплата зафиксирована!")
                                     st.rerun()
-                    else:
-                        st.info("Календарный график для этого клиента отсутствует.")
