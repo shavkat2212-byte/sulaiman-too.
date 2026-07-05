@@ -76,9 +76,6 @@ def show_clients_page():
                 st.error(f"Ошибка Supabase: {e}")
                 all_sales, all_payments = [], []
 
-            # -----------------------------------------------------------------
-            # 1. ГЛАВНЫЙ АНАЛИТИЧЕСКИЙ ОТЧЕТ ПО ПРИБЫЛИ И ДОГОВОРАМ
-            # -----------------------------------------------------------------
             st.markdown("### 📊 Аналитика активных договоров рассрочки")
             installments_summary = []
             
@@ -95,13 +92,14 @@ def show_clients_page():
                 current_debt_left = retail_with_markup - already_paid
                 
                 unpaid_payments = [p for p in sale_payments if p["status"] != "Оплачен"]
-                monthly_payment_sum = int(unpaid_payments[0]["amount_expected"]) if unpaid_payments else 0
+                # Сортируем плановые даты, чтобы найти ближайший месяц
+                unpaid_payments_sorted = sorted(unpaid_payments, key=lambda x: x.get('due_date', ''))
+                monthly_payment_sum = int(unpaid_payments_sorted[0]["amount_expected"]) if unpaid_payments_sorted else 0
                 
                 cost_price = int(s.get("total_cost", 0) or 0)
                 sale_price = int(s.get("total_sale", 0) or 0)
                 down_pay = int(s.get("down_payment", 0) or 0)
                 
-                # Прибыль = (Перв. взнос + Итоговая сумма рассрочки) - Закупка товаров
                 expected_profit = (down_pay + retail_with_markup) - cost_price
 
                 if current_debt_left > 0:
@@ -129,9 +127,6 @@ def show_clients_page():
 
             st.write("---")
             
-            # -----------------------------------------------------------------
-            # 2. ФАКТИЧЕСКИЙ И ПЛАНИРУЕМЫЙ ОТЧЁТЫ ПО ПЕРИОДАМ
-            # -----------------------------------------------------------------
             st.markdown("### 📅 Аналитика движений по периодам дат")
             
             col_d1, col_d2 = st.columns(2)
@@ -149,12 +144,17 @@ def show_clients_page():
                             total_period_income = 0.0
                             for op in ops_res.data:
                                 if "Погашение рассрочки" in str(op.get("comment", "")) or "Перв. взнос" in str(op.get("comment", "")):
-                                    op_date_str = op["date"][:10]
+                                    op_date_str = op["date"]
                                     try:
-                                        op_date = datetime.strptime(op_date_str, "%Y-%m-%d").date()
+                                        # Парсим дату в зависимости от того, в каком формате она лежит
+                                        if "." in op_date_str[:10]:
+                                            op_date = datetime.strptime(op_date_str[:10], "%d.%m.%Y").date()
+                                        else:
+                                            op_date = datetime.strptime(op_date_str[:10], "%Y-%m-%d").date()
+                                            
                                         if start_date <= op_date <= end_date:
                                             filtered_ops.append({
-                                                "Дата и время": op["date"],
+                                                "Дата и время": op_date_str,
                                                 "Сумма внесения (сом)": int(float(op["amount"])),
                                                 "Комментарий": op["comment"]
                                             })
@@ -175,7 +175,12 @@ def show_clients_page():
                     for p in all_payments:
                         if p["status"] != "Оплачен":
                             try:
-                                due_date_obj = datetime.strptime(p["due_date"], "%Y-%m-%d").date()
+                                p_due_str = p["due_date"]
+                                if "." in p_due_str:
+                                    due_date_obj = datetime.strptime(p_due_str, "%d.%m.%Y").date()
+                                else:
+                                    due_date_obj = datetime.strptime(p_due_str, "%Y-%m-%d").date()
+                                    
                                 if start_date <= due_date_obj <= end_date:
                                     cl_name = "Неизвестно"
                                     for cl in c_all.data:
@@ -184,7 +189,7 @@ def show_clients_page():
                                             break
                                     to_pay = int(p["amount_expected"] - p["amount_paid"])
                                     filtered_plan.append({
-                                        "Плановая дата платежа": p["due_date"],
+                                        "Плановая дата платежа": due_date_obj.strftime("%d.%m.%Y"),
                                         "ФИО Клиента": cl_name,
                                         "Размер платежа (сом)": int(p["amount_expected"]),
                                         "Осталось доплатить (сом)": to_pay,
@@ -202,10 +207,7 @@ def show_clients_page():
 
             st.write("---")
 
-            # -----------------------------------------------------------------
-            # 3. ИНДИВИДУАЛЬНЫЙ ГРАФИК КЛИЕНТА
-            # -----------------------------------------------------------------
-            st.markdown("### 🔍 Карточка и индивидуальный график клиента")
+            st.markdown("### 🔍 Карточка и individualный график клиента")
             debtor_opts = {cl["fio"]: cl["id"] for cl in c_all.data}
             selected_debtor_fio = st.selectbox("Выберите ФИО клиента для детального просмотра:", ["-- Выберите ФИО --"] + list(debtor_opts.keys()), key="debtor_view_sb")
             
@@ -218,7 +220,7 @@ def show_clients_page():
                     details_list = []
                     for idx, s in enumerate(chosen_cl_sales):
                         details_list.append({
-                            "№": idx + 1, "Дата": s["date"][:10], "Договор": s["name"],
+                            "№": idx + 1, "Дата": s["date"], "Договор": s["name"],
                             "Цена продажи (сом)": int(s.get("total_sale", 0)),
                             "Перв. взнос (сом)": int(s.get("down_payment", 0)),
                             "Долг + наценка (сом)": int(s.get("credit_balance", 0))
@@ -229,7 +231,14 @@ def show_clients_page():
                     client_payments = [p for p in all_payments if p["client_id"] == chosen_client_id]
                     
                     if client_payments:
-                        for p_row in sorted(client_payments, key=lambda x: x['due_date']):
+                        # Сортировка по датам
+                        def get_date_sort(x):
+                            try:
+                                return datetime.strptime(x['due_date'], "%d.%m.%Y")
+                            except:
+                                return datetime.strptime(x['due_date'], "%Y-%m-%d")
+
+                        for p_row in sorted(client_payments, key=get_date_sort):
                             col_p1, col_p2, col_p3, col_p4 = st.columns([2, 2, 2, 2])
                             col_p1.write(f"📅 Срок: {p_row['due_date']}")
                             col_p2.write(f"💵 Ожидается: {int(p_row['amount_expected'])} сом")
@@ -241,10 +250,15 @@ def show_clients_page():
                                     new_paid = float(p_row['amount_paid']) + pay_amount
                                     new_status = "Оплачен" if new_paid >= float(p_row['amount_expected']) else "Частично"
                                     
+                                    # Форматирование текущего момента времени в ДД.ММ.ГГГГ ЧЧ:ММ
+                                    now_formatted = datetime.now().strftime("%d.%m.%Y %H:%M")
+                                    
                                     supabase.table("credit_payments").update({"amount_paid": new_paid, "status": new_status}).eq("id", p_row['id']).execute()
                                     supabase.table("cash_operations").insert({
-                                        "date": datetime.now().strftime("%Y-%m-%d %H:%M"), 
+                                        "date": now_formatted, 
                                         "amount": pay_amount, "comment": f"Погашение рассрочки от {selected_debtor_fio}"
                                     }).execute()
                                     st.success("Оплата зафиксирована!")
                                     st.rerun()
+                    else:
+                        st.info("Календарный график для этого клиента отсутствует.")
