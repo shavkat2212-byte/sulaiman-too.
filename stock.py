@@ -119,11 +119,26 @@ def show_stock_page():
                 item_data = supabase.table("products").select("*").eq("id", batch_id).execute().data[0]
 
                 with st.form("edit_form"):
+                    # ДОБАВЛЕНО: Поле для редактирования названия (с красивым выводом с заглавной буквы)
+                    new_name = st.text_input("Название товара", value=str(item_data["name"]).capitalize())
+                    
                     new_qty = st.number_input("Изменить остаток (шт)", min_value=0, value=int(item_data["qty"]))
                     new_cost = st.number_input("Цена закупки", min_value=0.0, value=float(item_data["cost"]))
                     new_price = st.number_input("Цена продажи", min_value=0.0, value=float(item_data["price"]))
 
                     if st.form_submit_button("💾 Сохранить изменения"):
-                        supabase.table("products").update({"qty": new_qty, "cost": new_cost, "price": new_price}).eq("id", batch_id).execute()
-                        st.success("Изменено!")
-                        st.rerun()
+                        if new_name.strip():
+                            # Очищаем пробелы и переводим в нижний регистр перед записью в Supabase
+                            processed_name = new_name.strip().lower()
+                            
+                            supabase.table("products").update({
+                                "name": processed_name, 
+                                "qty": new_qty, 
+                                "cost": new_cost, 
+                                "price": new_price
+                            }).eq("id", batch_id).execute()
+                            
+                            st.success("Изменения успешно сохранены!")
+                            st.rerun()
+                        else:
+                            st.error("Название товара не может быть пустым!")
