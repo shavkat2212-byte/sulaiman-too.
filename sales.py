@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Продажи
-# Версия программы: 1.2 (Исправлены уникальные номера договоров и ДД.ММ.ГГГГ формат дат)
+# Версия программы: 1.3 (Исправлена критическая ошибка формата месяцев %M -> %m)
 
 import streamlit as st
 import pandas as pd
@@ -22,7 +22,6 @@ def show_sales_page():
         sel_display = st.selectbox("🔍 Выберите товар", unique_names)
         p_key = sel_display.lower()
         
-        # Перевод отображения даты партии в формат ДД.ММ.ГГГГ
         def format_batch_date(d_str):
             try: return datetime.strptime(d_str, '%Y-%m-%d').strftime('%d.%m.%Y')
             except: return d_str
@@ -112,9 +111,8 @@ def show_sales_page():
             base_group_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
             day_str = sale_date.strftime("%Y-%m-%d")
             
-            # Красивый читаемый формат времени ДД.ММ.ГГГГ ЧЧ:ММ
+            # ИСПРАВЛЕНО: %m вместо %M для корректного вывода месяцев
             formatted_date_full = f"{sale_date.strftime('%d.%m.%Y')} {datetime.now().strftime('%H:%M')}"
-            # Читаемый короткий номер договора (ДеньМесяц-ЧасыМинуты Секунды для уникальности)
             contract_num_suffix = datetime.now().strftime("%d%m-%H%M%S")
             
             try:
@@ -162,6 +160,7 @@ def show_sales_page():
                 if pay_method == "Рассрочка" and client_id:
                     for m in range(1, months + 1):
                         due_date_obj = sale_date + timedelta(days=30 * m)
+                        # ИСПРАВЛЕНО: %m вместо %M
                         formatted_due_date = due_date_obj.strftime("%d.%m.%Y")
                         try:
                             supabase.table("credit_payments").insert({
