@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Отчеты и Аналитика
-# Версия программы: 1.3.4 (КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Исправлена формула расчета Валовой чистой прибыли)
+# Версия программы: 1.3.5 (Раздельный учёт доходов: Наличные, Рассрочка и Общие итоги прибыли)
 
 import streamlit as st
 import pandas as pd
@@ -43,7 +43,6 @@ def show_reports_page():
     st.header("📊 Аналитика и история продаж")
     
     sales_all = supabase.table("sales").select("*").order("date", desc=True).execute()
-    ops_res = supabase.table("cash_operations").select("*").order("date", desc=True).execute()
     
     if not sales_all.data:
         st.write("Продаж еще не было.")
@@ -68,52 +67,52 @@ def show_reports_page():
         start_date, end_date = date_range
         filtered_df = df[(df['day_obj'] >= start_date) & (df['day_obj'] <= end_date)]
         
-        filtered_ops_data = []
-        if ops_res.data:
-            for op in ops_res.data:
-                try:
-                    op_date_str = op["date"]
-                    if "." in op_date_str[:10]:
-                        op_day = datetime.strptime(op_date_str[:10], "%d.%m.%Y").date()
-                    else:
-                        op_day = datetime.strptime(op_date_str[:10], "%Y-%m-%d").date()
-                        
-                    if start_date <= op_day <= end_date:
-                        filtered_ops_data.append(op)
-                except:
-                    continue
+        # -----------------------------------------------------------------
+        # РАСЧЁТ РАЗДЕЛЬНЫХ ПОКАЗАТЕЛЕЙ ДОХОДНОСТИ
+        # -----------------------------------------------------------------
         
-        # Разделение приходов для структуры кассы
-        total_sales_cash = filtered_df[filtered_df['payment'] == 'Наличные']['total_sale'].sum()
-        total_down_payments = filtered_df[filtered_df['payment'] == 'Рассрочка']['down_payment'].sum()
+        # 1. Наличные (Прямые продажи)
+        df_cash = filtered_df[filtered_df['payment'] == 'Наличные']
+        cash_turnover = df_cash['total_sale'].sum()
+        cash_profit = df_cash['profit'].sum()
         
-        total_credit_collected = 0.0
-        if filtered_ops_data:
-            for op in filtered_ops_data:
-                if "Погашение рассрочки" in str(op.get("comment", "")):
-                    total_credit_collected += float(op["amount"])
+        # 2. Рассрочка (Ожидаемый доход при 100% выплате всех клиентов)
+        df_credit = filtered_df[filtered_df['payment'] == 'Рассрочка']
+        credit_turnover = df_credit['total_sale'].sum()
+        
+        # Для рассрочки прибыль = (Первоначальный взнос + Итоговая сумма долга с наценкой) - Себестоимость закупки
+        credit_profit = 0.0
+        for _, row in df_credit.iterrows():
+            cost = float(row.get("total_cost", 0) or 0)
+            down = float(row.get("down_payment", 0) or 0)
+            balance_markup = float(row.get("credit_balance", 0) or 0)
+            # Чистая маржа сделки с учётом наценки
+            credit_profit += (down + balance_markup) - cost
 
-        # Общий оборот кассы по факту живых денег
-        total_revenue = total_sales_cash + total_down_payments + total_credit_collected
-        
-        # Себестоимость закупки проданного товара
-        total_cost = filtered_df['total_cost'].sum()
-        
-        # === ИСПРАВЛЕННАЯ ЛОГИКА ПРИБЫЛИ ===
-        # Суммируем чистую прибыль (маржу), заложенную в каждую сделку (Цена продажи - Закупка)
-        total_profit = filtered_df['profit'].sum()
+        # 3. Общие итоги (Сумма обеих категорий)
+        total_turnover = cash_turnover + credit_turnover
+        total_profit_combined = cash_profit + credit_profit
 
+        # Вывод красивых блоков метрик на экран
         st.markdown("---")
-        m1, m2, m3 = st.columns(3)
-        m1.metric("💵 Общий приход (Фактически в кассе)", f"{int(total_revenue):,} сом")
-        m2.metric("📦 Себестоимость закупки отгруженного", f"{int(total_cost):,} сом")
-        m3.metric("📈 Валовая чистая прибыль", f"{int(total_profit):,} сом", delta=f"{int(total_profit)}")
-
-        with st.expander("📊 Развернутая детализация структуры выручки кассы"):
-            c1, c2, c3 = st.columns(3)
-            c1.info(f"🟢 Прямые продажи (Нал): \n**{int(total_sales_cash):,} сом**")
-            c2.info(f"🔵 Первоначальные взносы: \n**{int(total_down_payments):,} сом**")
-            c3.info(f"🟣 Погашения рассрочек: \n**{int(total_credit_collected):,} сом**")
+        
+        # Строка 1: Прямые наличные продажи
+        st.markdown("#### 🟢 Прямые продажи (Наличные)")
+        col_c1, col_c2 = st.columns(2)
+        col_c1.metric("Сумма продаж (Нал)", f"{int(cash_turnover):,} сом")
+        col_c2.metric("Чистая прибыль (Нал)", f"{int(cash_profit):,} сом")
+        
+        # Строка 2: Продажи в рассрочку
+        st.markdown("#### 🔵 Продажи в рассрочку (Прогноз)")
+        col_r1, col_r2 = st.columns(2)
+        col_r1.metric("Общая сумма чеков рассрочки", f"{int(credit_turnover):,} сом")
+        col_r2.metric("Ожидаемая прибыль (+наценка 3%/мес)", f"{int(credit_profit):,} сом")
+        
+        # Строка 3: Суммарные итоги
+        st.markdown("#### 🏛️ Итоговые показатели по магазину")
+        col_t1, col_t2 = st.columns(2)
+        col_t1.metric("🔥 Общий оборот продаж", f"{int(total_turnover):,} сом")
+        col_t2.metric("📈 Суммарная чистая прибыль", f"{int(total_profit_combined):,} сом")
 
         st.markdown("---")
         st.subheader("📋 Детализация списка продаж")
@@ -123,6 +122,12 @@ def show_reports_page():
             for _, row in filtered_df.iterrows():
                 fixed_name = fix_contract_name_on_fly(row['name'], row['date'])
                 
+                # Считаем точную прибыль для строки отображения
+                if row['payment'] == 'Рассрочка':
+                    row_profit = (int(row.get('down_payment', 0) or 0) + int(row.get('credit_balance', 0) or 0)) - int(row['total_cost'])
+                else:
+                    row_profit = int(row['profit'])
+
                 report_display.append({
                     "Дата операции": format_any_date(row['date'], include_time=True),
                     "Наименование договора / Товара": fixed_name,
@@ -132,7 +137,7 @@ def show_reports_page():
                     "Продажа (сом)": int(row['total_sale']),
                     "Взнос (Нал)": int(row.get('down_payment', 0) or 0),
                     "Остаток долга (+наценка)": int(row.get('credit_balance', 0) or 0),
-                    "Прибыль (сом)": int(row['profit']),
+                    "Прибыль (сом)": int(row_profit),
                     "sale_id": row['id'],
                     "raw_payment": row['payment']
                 })
@@ -158,7 +163,7 @@ def show_reports_page():
             
             # БЛОК УМНОЙ ОТМЕНЫ
             st.markdown("---")
-            st.subheader("⚙️ Management и отмена продаж")
+            st.subheader("⚙️ Управление и отмена продаж")
             
             cancel_options = {f"{row['Дата операции']} | {row['Наименование договора / Товара']}": row for idx, row in df_display.iterrows()}
             selected_to_cancel = st.selectbox("🚫 Выберите операцию для её полной отмены и возврата остатков:", ["-- Не выбрано --"] + list(cancel_options.keys()))
@@ -205,7 +210,7 @@ def show_reports_page():
                             supabase.table("sales").delete().eq("id", s_del["sale_id"]).execute()
                             supabase.table("credit_payments").delete().eq("sale_id", s_del["sale_id"]).execute()
                             
-                            st.success("🎉 Операция успешно отменена!")
+                            st.success("🎉 Органицация успешно отменена!")
                             st.rerun()
                         except Exception as e:
                             st.error(f"Ошибка при удалении продажи: {e}")
