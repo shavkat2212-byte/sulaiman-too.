@@ -27,7 +27,6 @@ def show_sales_page():
         sqty = st.number_input("Количество для продажи", min_value=1, max_value=int(chosen_batch["qty"]), value=1)
         custom_price = st.number_input("💰 Цена за 1 шт, сом", min_value=0.0, value=float(chosen_batch['price']))
         
-        # Отображаем закупочную цену (cost) под полями ввода для информации
         st.caption(f"ℹ️ Закупочная цена (себестоимость): {int(chosen_batch['cost'])} сом")
         
         if st.button("➕ Добавить в чек", use_container_width=True):
@@ -45,9 +44,7 @@ def show_sales_page():
             total_cart_sum = 0.0
         else:
             cart_df = pd.DataFrame(st.session_state.cart)
-            # ДОБАВЛЕНО: Создаем колонку для красивого отображения закупки в таблице
             cart_df["Закупка (1 шт)"] = cart_df["cost"].astype(int)
-            # Выводим таблицу с добавлением новой колонки
             st.dataframe(cart_df[["name", "qty", "price", "Закупка (1 шт)", "total"]], use_container_width=True, hide_index=True)
             total_cart_sum = cart_df["total"].sum()
             st.markdown(f"### 💵 Сумма по чеку: {total_cart_sum:,.2f} сом")
@@ -78,13 +75,36 @@ def show_sales_page():
             c_r1, c_r2 = st.columns(2)
             down_payment = c_r1.number_input("💵 Первоначальный взнос, сом", min_value=0.0, max_value=float(total_cart_sum), value=0.0)
             months = c_r2.number_input("📅 Срок рассрочки (месяцев)", min_value=1, max_value=24, value=6)
-        
-        net_debt = total_cart_sum - down_payment
-        markup_percent = months * 3
-        total_with_markup = net_debt + (net_debt * (markup_percent / 100))
-        monthly_payment = round(total_with_markup / months) if months > 0 else 0
+            
+            # --- ВОЗВРАЩАЕМ И УЛУЧШАЕМ ГИБКУЮ НАСТРОЙКУ НАЦЕНКИ И ОКРУГЛЕНИЯ ---
+            net_debt = total_cart_sum - down_payment
+            default_markup = months * 3 # 3% по умолчанию за каждый месяц
+            
+            st.markdown("#### 🛠️ Корректировка условий рассрочки")
+            col_m1, col_m2 = st.columns(2)
+            custom_markup_percent = col_m1.number_input("Процент наценки (всего за срок), %", min_value=0.0, value=float(default_markup), step=1.0)
+            
+            # Вычисляем сумму с выбранным процентом
+            calculated_with_markup = net_debt + (net_debt * (custom_markup_percent / 100))
+            default_monthly = round(calculated_with_markup / months) if months > 0 else 0
+            
+            # Свободное ручное поле для округления ежемесячного платежа менеджером
+            monthly_payment = col_m2.number_input("Ежемесячный платёж (можно округлить вручную), сом", min_value=0, value=int(default_monthly), step=10)
+            
+            # Итоговая сумма долга пересчитывается от того, что менеджер ввёл в ежемесячный платёж
+            total_with_markup = monthly_payment * months
+            overpayment = total_with_markup - net_debt
+            
+            st.warning(f"📊 Расчёт: Чистый долг: {net_debt:,.0f} сом | Всего с наценкой: {total_with_markup:,.0f} сом | Переплата: {overpayment:,.0f} сом")
+        else:
+            total_with_markup = 0
+            monthly_payment = 0
 
         if st.button("🚀 Оформить и провести сделку", type="primary", use_container_width=True):
+            if pay_method == "Рассрочка" and not client_id:
+                st.error("❌ Выберите клиента для рассрочки!")
+                return
+                
             sale_group_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
             day_str = sale_date.strftime("%Y-%m-%d")
             date_full_str = f"{day_str} {datetime.now().strftime('%H:%M')}"
@@ -118,6 +138,14 @@ def show_sales_page():
                         "qty": 1, "total_sale": int(total_cart_sum), "total_cost": int(total_cost_sum), "profit": int(total_cart_sum - total_cost_sum),
                         "payment": "Рассрочка", "down_payment": int(down_payment), "credit_balance": int(total_with_markup), "client_id": client_id
                     }).execute()
+                    
+                    # Если был первоначальный взнос наличными, фиксируем его в кассе магазина
+                    if down_payment > 0:
+                        supabase.table("cash_operations").insert({
+                            "date": date_full_str, 
+                            "amount": float(down_payment), 
+                            "comment": f"Перв. взнос по рассрочке №{sale_group_id[:6]} от {sel_client_name}"
+                        }).execute()
                 
                 if pay_method == "Рассрочка" and client_id:
                     for m in range(1, months + 1):
