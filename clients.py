@@ -62,7 +62,7 @@ def show_clients_page():
             st.dataframe(df_c[["ID", "ФИО Клиента", "Телефон", "Адрес проживания", "Паспортные данные"]], use_container_width=True, hide_index=True)
 
     # =========================================================================
-    # ВКЛАДКА 2: ПОЛНОЦЕННОЕ ОКНО КОНТРОЛЯ РАССРОЧЕК И АНАЛИТИКИ ПРИБЫЛИ
+    # ВКЛАДКА 2: ПОЛНОЦЕННОЕ ОКНО КОНТРОЛЯ РАССРОЧЕК И ПЛАНИРОВАНИЯ
     # =========================================================================
     with tab_installments_window:
         st.subheader("📋 Мониторинг договоров, Прибыли и Погашений")
@@ -83,116 +83,145 @@ def show_clients_page():
                 all_sales, all_payments = [], []
 
             # -----------------------------------------------------------------
-            # 1. ГЛАВНЫЙ ОТЧЕТ: СПИСОК ДОГОВОРОВ С РАСЧЕТОМ СЕБЕСТОИМОСТИ И ПРИБЫЛИ
+            # 1. ГЛАВНЫЙ ОТЧЕТ: АНАЛИТИКА ДОГОВОРОВ С УЧЕТОМ ВЗНОСОВ И НАЦЕНОК
             # -----------------------------------------------------------------
             st.markdown("### 📊 Аналитика активных договоров рассрочки")
             
             installments_summary = []
             
             for s in all_sales:
-                # Ищем ФИО клиента по его client_id
+                # Находим ФИО клиента
                 client_fio = "Неизвестный клиент"
                 for cl in c_all.data:
                     if cl["id"] == s["client_id"]:
                         client_fio = cl["fio"]
                         break
                 
-                # Получаем плановые платежи по данному конкретному договору (sale_id)
+                # Платежи конкретно по этому договору (sale_id)
                 sale_payments = [p for p in all_payments if p["sale_id"] == s["id"]]
                 
-                # Считаем, сколько клиент уже выплатил по этому договору
+                # Сколько уже внесено по графику рассрочки
                 already_paid = sum(float(p.get("amount_paid", 0) or 0) for p in sale_payments)
                 
-                # Остаток долга = Полная сумма с наценкой (credit_balance) минус то, что уже оплачено
-                current_debt_left = int(s.get("credit_balance", 0)) - already_paid
+                # Полная сумма долга с наценкой (credit_balance)
+                retail_with_markup = int(s.get("credit_balance", 0) or 0)
                 
-                # Ближайший ежемесячный платеж (первый неоплаченный)
+                # Текущий остаток долга по графику рассрочки
+                current_debt_left = retail_with_markup - already_paid
+                
+                # Ближайший платеж
                 unpaid_payments = [p for p in sale_payments if p["status"] != "Оплачен"]
                 monthly_payment_sum = int(unpaid_payments[0]["amount_expected"]) if unpaid_payments else 0
                 
-                # Себестоимость закупки партии (total_cost) и розничная цена (total_sale)
-                cost_price = int(s.get("total_cost", 0) or 0)
-                retail_price = int(s.get("credit_balance", 0) or 0) # полная стоимость к возврату с наценкой
+                # Данные по закупке, рознице и первичному взносу
+                cost_price = int(s.get("total_cost", 0) or 0)       # Себестоимость закупки товара
+                sale_price = int(s.get("total_sale", 0) or 0)       # Первоначальная цена продажи (без наценки)
+                down_pay = int(s.get("down_payment", 0) or 0)       # Первоначальный взнос (Нал на кассе)
                 
-                # Ожидаемая чистая прибыль с договора = Сколько должен вернуть всего - Сколько стоил в закупе
-                expected_profit = retail_price - cost_price
+                # Чистая прибыль с договора = (Первоначальный взнос + Полный возврат рассрочки с наценкой) - Закупка
+                expected_profit = (down_pay + retail_with_markup) - cost_price
 
-                # Выводим только активные договора (где остаток долга больше нуля)
                 if current_debt_left > 0:
                     installments_summary.append({
                         "Клиент": client_fio,
                         "Договор / Состав товаров": s["name"],
                         "Закупка (сом)": cost_price,
-                        "Сумма с наценкой (сом)": retail_price,
+                        "Цена продажи (сом)": sale_price,
+                        "Перв. взнос (сом)": down_pay,
+                        "Долг + наценка (сом)": retail_with_markup,
                         "Остаток долга (сом)": int(current_debt_left),
                         "Ежемес. платёж (сом)": monthly_payment_sum,
-                        "Ожидаемая прибыль (сом)": expected_profit,
-                        "sale_id": s["id"],
-                        "client_id": s["client_id"]
+                        "Чистая прибыль (сом)": expected_profit
                     })
 
             if not installments_summary:
                 st.info("На данный момент нет активных задолженностей по рассрочкам.")
             else:
                 df_summary = pd.DataFrame(installments_summary)
-                
-                # Отображаем красивую аналитическую таблицу
                 st.dataframe(
-                    df_summary[["Клиент", "Договор / Состав товаров", "Закупка (сом)", "Сумма с наценкой (сом)", "Остаток долга (сом)", "Ежемес. платёж (сом)", "Ожидаемая прибыль (сом)"]], 
+                    df_summary[["Клиент", "Договор / Состав товаров", "Закупка (сом)", "Цена продажи (сом)", "Перв. взнос (сом)", "Долг + наценка (сом)", "Остаток долга (сом)", "Ежемес. платёж (сом)", "Чистая прибыль (сом)"]], 
                     use_container_width=True, 
                     hide_index=True
                 )
-                
-                # Краткие итоги по всему портфелю рассрочек
-                st.markdown(f"""
-                💡 **Итого по активной рассрочке:** Всего в закупе на сумму **{df_summary['Закупка (сом)'].sum():,} сом**. 
-                Остаток чистой задолженности клиентов: **{df_summary['Остаток долга (сом)'].sum():,} сом**. 
-                Прогнозируемая чистая прибыль после полного погашения: **{df_summary['Ожидаемая прибыль (сом)'].sum():,} сом**.
-                """)
 
             st.write("---")
             
             # -----------------------------------------------------------------
-            # 2. ФИЛЬТР ПО ПЕРИОДУ: ПОСМОТРЕТЬ ФАКТИЧЕСКИЕ ПОГАШЕНИЯ ЗА ВРЕМЯ
+            # 2. ДВОЙНОЙ БЛОК ОТЧЕТОВ: ФАКТИЧЕСКИЕ И ПЛАНИРУЕМЫЕ ПЛАТЕЖИ
             # -----------------------------------------------------------------
-            st.markdown("### 📅 Отчёт по фактическим погашениям за период")
+            st.markdown("### 📅 Аналитика движений по периодам дат")
             
             col_d1, col_d2 = st.columns(2)
             start_date = col_d1.date_input("🗓️ Начало периода", value=datetime.now().date())
             end_date = col_d2.date_input("🗓️ Конец периода", value=datetime.now().date())
             
-            if st.button("🔍 Показать погашения за период", type="secondary", use_container_width=True):
-                try:
-                    # Ищем операции погашения в кассе по комментарию "Погашение рассрочки"
-                    ops_res = supabase.table("cash_operations").select("*").execute()
+            tab_fact, tab_plan = st.tabs(["💰 Фактически оплачено (Касса)", "⏳ Должны оплатить по плану"])
+            
+            # Подвкладка фактических поступлений
+            with tab_fact:
+                if st.button("🔍 Рассчитать фактические погашения", use_container_width=True):
+                    try:
+                        ops_res = supabase.table("cash_operations").select("*").execute()
+                        if ops_res.data:
+                            filtered_ops = []
+                            total_period_income = 0.0
+                            for op in ops_res.data:
+                                if "Погашение рассрочки" in str(op.get("comment", "")):
+                                    op_date_str = op["date"][:10]
+                                    try:
+                                        op_date = datetime.strptime(op_date_str, "%Y-%m-%d").date()
+                                        if start_date <= op_date <= end_date:
+                                            filtered_ops.append({
+                                                "Дата и время": op["date"],
+                                                "Сумма внесения (сом)": int(float(op["amount"])),
+                                                "Комментарий / Кто оплатил": op["comment"]
+                                            })
+                                            total_period_income += float(op["amount"])
+                                    except: continue
+                            if filtered_ops:
+                                st.success(f"Всего в кассу внесено живых денег за период: **{int(total_period_income):,} сом**")
+                                st.dataframe(pd.DataFrame(filtered_ops), use_container_width=True, hide_index=True)
+                            else:
+                                st.info("За выбранный период фактических платежей не найдено.")
+                    except Exception as e: st.error(f"Ошибка кассового отчета: {e}")
+            
+            # Подвкладка ПЛАНИРУЕМЫХ платежей по графику
+            with tab_plan:
+                if st.button("🗓️ Показать план ожидаемых оплат", use_container_width=True):
+                    filtered_plan = []
+                    total_expected_sum = 0
                     
-                    if ops_res.data:
-                        filtered_ops = []
-                        total_period_income = 0.0
-                        
-                        for op in ops_res.data:
-                            # Проверяем, что операция относится к рассрочке
-                            if "Погашение рассрочки" in str(op.get("comment", "")):
-                                # Вытаскиваем дату операции YYYY-MM-DD
-                                op_date_str = op["date"][:10]
-                                try:
-                                    op_date = datetime.strptime(op_date_str, "%Y-%m-%d").date()
-                                    if start_date <= op_date <= end_date:
-                                        filtered_ops.append({
-                                            "Дата и время": op["date"],
-                                            "Сумма внесения (сом)": int(float(op["amount"])),
-                                            "Комментарий / Кто оплатил": op["comment"]
-                                        })
-                                        total_period_income += float(op["amount"])
-                                except: continue
-                                
-                        if filtered_ops:
-                            st.success(f"💰 Всего за указанный период клиенты внесли: **{int(total_period_income):,} сом**")
-                            st.dataframe(pd.DataFrame(filtered_ops), use_container_width=True, hide_index=True)
-                        else:
-                            st.info("За выбранный период платежей по погашению рассрочек не обнаружено.")
-                except Exception as e:
-                    st.error(f"Ошибка формирования отчета по периодам: {e}")
+                    for p in all_payments:
+                        if p["status"] != "Оплачен":
+                            try:
+                                due_date_obj = datetime.strptime(p["due_date"], "%Y-%m-%d").date()
+                                if start_date <= due_date_obj <= end_date:
+                                    # Ищем имя клиента
+                                    cl_name = "Неизвестно"
+                                    for cl in c_all.data:
+                                        if cl["id"] == p["client_id"]:
+                                            cl_name = cl["fio"]
+                                            break
+                                            
+                                    # Ищем остаток, который осталось доплатить по этому конкретному месяцу
+                                    to_pay = int(p["amount_expected"] - p["amount_paid"])
+                                    filtered_plan.append({
+                                        "Плановая дата платежа": p["due_date"],
+                                        "ФИО Клиента": cl_name,
+                                        "Размер платежа (сом)": int(p["amount_expected"]),
+                                        "Осталось доплатить (сом)": to_pay,
+                                        "Статус месяца": p["status"]
+                                    })
+                                    total_expected_sum += to_pay
+                            except: continue
+                            
+                    if filtered_plan:
+                        # Сортируем список по дате ожидания, чтобы шло по порядку календарных дней
+                        df_plan_res = pd.DataFrame(filtered_plan).sort_values("Плановая дата платежа")
+                        st.warning(f"📉 Суммарный ожидаемый план оплат от клиентов на этот период: **{total_expected_sum:,} сом**")
+                        st.dataframe(df_plan_res, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("На выбранный период плановых платежей нет.")
 
             st.write("---")
 
@@ -206,8 +235,6 @@ def show_clients_page():
             
             if selected_debtor_fio != "-- Выберите ФИО --":
                 chosen_client_id = debtor_opts[selected_debtor_fio]
-                
-                # Фильтруем договора именно этого клиента
                 chosen_cl_sales = [s for s in all_sales if s["client_id"] == chosen_client_id]
                 
                 if chosen_cl_sales:
@@ -218,11 +245,12 @@ def show_clients_page():
                             "№": idx + 1,
                             "Дата оформления": s["date"][:10] if s.get("date") else "-",
                             "Название договора": s["name"],
-                            "Полная сумма (сом)": int(s.get("credit_balance", 0))
+                            "Цена продажи (сом)": int(s.get("total_sale", 0)),
+                            "Перв. взнос (сом)": int(s.get("down_payment", 0)),
+                            "Долг + наценка (сом)": int(s.get("credit_balance", 0))
                         })
                     st.table(pd.DataFrame(details_list))
                     
-                    # Сразу выводим его календарный график платежей и форму приема оплаты
                     st.markdown("#### 🗓️ Текущий календарный график платежей")
                     client_payments = [p for p in all_payments if p["client_id"] == chosen_client_id]
                     
@@ -239,9 +267,7 @@ def show_clients_page():
                                     new_paid = float(p_row['amount_paid']) + pay_amount
                                     new_status = "Оплачен" if new_paid >= float(p_row['amount_expected']) else "Частично"
                                     
-                                    # Обновляем статус платежа
                                     supabase.table("credit_payments").update({"amount_paid": new_paid, "status": new_status}).eq("id", p_row['id']).execute()
-                                    # Фиксируем приход денег в кассу
                                     supabase.table("cash_operations").insert({
                                         "date": datetime.now().strftime("%Y-%m-%d %H:%M"), 
                                         "amount": pay_amount, 
@@ -252,5 +278,3 @@ def show_clients_page():
                                     st.rerun()
                     else:
                         st.info("Календарный график для этого клиента отсутствует.")
-                else:
-                    st.warning("У этого клиента нет активных или прошлых договоров рассрочки.")
