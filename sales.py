@@ -1,129 +1,170 @@
 import streamlit as st
-import pandas as pd
-from datetime import datetime, timedelta
 from database import supabase
 
-def show_sales_page():
+def render_sales_page():
+    st.title(" Магазин «Сулайман-Тоо» — Учет и Рассрочки")
     st.header("Оформить продажу (Корзина покупок)")
-    stock_res = supabase.table("products").select("*").gt("qty", 0).execute()
-    clients_res = supabase.table("clients").select("*").order("fio").execute()
-    
-    if not stock_res.data:
-        st.warning("На складе нет доступных товаров для продажи")
-        return
 
-    col_form, col_cart = st.columns([1.2, 1])
-    with col_form:
-        st.subheader("🛒 Выбор товаров")
-        unique_names = sorted(list(set(row["name"].capitalize() for row in stock_res.data)))
-        sel_display = st.selectbox("🔍 Выберите товар", unique_names)
-        p_key = sel_display.lower()
-        
-        batches_options = {f"Поступление от {row['date']} (Остаток: {row['qty']} шт.)": row["id"] for row in stock_res.data if row["name"] == p_key}
-        selected_batch_label = st.selectbox("📦 Выберите партию", list(batches_options.keys()))
-        batch_id = batches_options[selected_batch_label]
-        chosen_batch = supabase.table("products").select("*").eq("id", batch_id).execute().data[0]
-        
-        sqty = st.number_input("Количество для продажи", min_value=1, max_value=int(chosen_batch["qty"]), value=1)
-        custom_price = st.number_input("💰 Цена за 1 шт, сом", min_value=0.0, value=float(chosen_batch['price']))
-        
-        if st.button("➕ Добавить в чек", use_container_width=True):
-            st.session_state.cart.append({
-                "batch_id": batch_id, "name": sel_display, "batch_date": chosen_batch["date"],
-                "qty": sqty, "price": custom_price, "total": sqty * custom_price, "cost": float(chosen_batch["cost"]), "pure_name": p_key
-            })
-            st.success(f"Товар добавлен в чек!")
-            st.rerun()
+    # Инициализация корзины в сессии, если её нет
+    if "cart" not in st.session_state:
+        st.session_state.cart = []
 
-    with col_cart:
-        st.subheader("🧾 Текущий чек (Корзина)")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("### 🛒 Выбор товаров")
+        
+        # 1. Загрузка товаров
+        try:
+            products_res = supabase.table("products").select("id, name").execute()
+            products = products_res.data
+        except Exception as e:
+            st.error(f"Ошибка загрузки товаров: {e}")
+            products = []
+
+        if products:
+            product_options = {p["name"]: p["id"] for p in products}
+            selected_product_name = st.selectbox("Выберите товар", list(product_options.keys()))
+            selected_product_id = product_options[selected_product_name]
+            
+            # 2. Загрузка партий для выбранного товара (включая закупочную цену)
+            try:
+                batches_res = supabase.table("batches").select("id, batch_date, stock_quantity, purchase_price").eq("product_id", selected_product_id).gt("stock_quantity", 0).execute()
+                batches = batches_res.data
+            except Exception as e:
+                st.error(f"Ошибка загрузки партий: {e}")
+                batches = []
+
+            if batches:
+                # Формируем список партий для selectbox
+                batch_options = {f"Поступление от {b['batch_date']} (Остаток: {int(b['stock_quantity'])} шт.)": b for b in batches}
+                selected_batch_label = st.selectbox("Выберите партию", list(batch_options.keys()))
+                selected_batch_data = batch_options[selected_batch_label]
+                
+                # Закупочная цена из партии (принудительно в int)
+                purchase_price = int(selected_batch_data.get("purchase_price", 0))
+                
+                # Поля ввода для количества и цены продажи
+                quantity = st.number_input("Количество для продажи", min_value=1, max_value=int(selected_batch_data["stock_quantity"]), value=1, step=1)
+                selling_price = st.number_input("Цена за 1 шт, сом", min_value=0, value=0, step=100)
+                
+                # Отображаем закупочную цену для информации (чтобы менеджер видел маржу)
+                st.caption(f"ℹ️ Закупочная цена этой партии: {purchase_price} сом")
+
+                if st.button("➕ Добавить в чек"):
+                    # Добавляем товар в корзину с сохранением закупочной цены
+                    item = {
+                        "product_id": selected_product_id,
+                        "product_name": selected_product_name,
+                        "batch_id": selected_batch_data["id"],
+                        "quantity": int(quantity),
+                        "selling_price": int(selling_price),
+                        "purchase_price": purchase_price  # <--- Сохраняем закупочную цену товара
+                    }
+                    st.session_state.cart.append(item)
+                    st.toast(f"Добавлено: {selected_product_name}")
+                    st.rerun()
+            else:
+                st.warning("Нет доступных партий с остатками для этого товара.")
+        else:
+            st.info("В базе данных ещё нет товаров.")
+
+    with col2:
+        st.markdown("### 📋 Текущий чек (Корзина)")
+        
         if not st.session_state.cart:
             st.info("Чек пока пуст.")
-            total_cart_sum = 0.0
         else:
-            cart_df = pd.DataFrame(st.session_state.cart)
-            st.dataframe(cart_df[["name", "qty", "price", "total"]], use_container_width=True, hide_index=True)
-            total_cart_sum = cart_df["total"].sum()
-            st.markdown(f"### 💵 Сумма по чеку: {total_cart_sum:,.2f} сом")
-            if st.button("🗑️ Очистить чек"):
+            total_sum = 0
+            cart_table = []
+            
+            for idx, item in enumerate(st.session_state.cart):
+                subtotal = item["quantity"] * item["selling_price"]
+                total_sum += subtotal
+                cart_table.append({
+                    "№": idx + 1,
+                    "Товар": item["product_name"],
+                    "Кол-во": item["quantity"],
+                    "Цена (сом)": item["selling_price"],
+                    "Закупка (сом)": item["purchase_price"],  # <-- Выводим в таблицу чека
+                    "Итого": subtotal
+                })
+            
+            st.dataframe(cart_table, use_container_width=True, hide_index=True)
+            st.markdown(f"#### Всего к оплате: **{total_sum} сом**")
+            
+            if st.button("🗑️ Очистить корзину"):
                 st.session_state.cart = []
                 st.rerun()
-
-    if st.session_state.cart:
-        st.markdown("---")
-        st.subheader("💳 Параметры оплаты чека")
-        sale_date = st.date_input("📅 Дата продажи", value=datetime.now().date())
-        pay_method = st.radio("Способ оплаты", ["Наличные", "Рассрочка"], horizontal=True)
-        
-        down_payment = 0.0
-        months = 1
-        client_id = None
-        sel_client_name = ""
-        
-        if pay_method == "Рассрочка":
-            if not clients_res.data:
-                st.error("❌ Сначала добавьте клиента в разделе «База клиентов».")
-                return
-            client_opts = {f"{c['fio']} ({c['phone']})": c for c in clients_res.data}
-            sel_client_label = st.selectbox("👤 Выберите клиента", list(client_opts.keys()))
-            client_id = client_opts[sel_client_label]["id"]
-            sel_client_name = client_opts[sel_client_label]["fio"]
+                
+            st.write("---")
+            st.markdown("### 💳 Завершение операции")
             
-            c_r1, c_r2 = st.columns(2)
-            down_payment = c_r1.number_input("💵 Первоначальный взнос, сом", min_value=0.0, max_value=float(total_cart_sum), value=0.0)
-            months = c_r2.number_input("📅 Срок рассрочки (месяцев)", min_value=1, max_value=24, value=6)
-        
-        net_debt = total_cart_sum - down_payment
-        markup_percent = months * 3
-        total_with_markup = net_debt + (net_debt * (markup_percent / 100))
-        monthly_payment = round(total_with_markup / months) if months > 0 else 0
-
-        if st.button("🚀 Оформить и провести сделку", type="primary", use_container_width=True):
-            sale_group_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
-            day_str = sale_date.strftime("%Y-%m-%d")
-            date_full_str = f"{day_str} {datetime.now().strftime('%H:%M')}"
-            
+            # Выбор клиента для оформления рассрочки или обычной продажи
             try:
-                total_cost_sum = 0.0
-                items_list_str = []
-                for item in st.session_state.cart:
-                    p_res = supabase.table("products").select("qty").eq("id", item["batch_id"]).execute().data[0]
-                    new_qty = int(p_res["qty"]) - item["qty"]
-                    supabase.table("products").update({"qty": new_qty}).eq("id", item["batch_id"]).execute()
-                    total_cost_sum += (item["qty"] * item["cost"])
-                    items_list_str.append(f"{item['name']} ({item['qty']} шт.)")
+                clients_res = supabase.table("clients").select("id, full_name").execute()
+                clients = clients_res.data
+            except Exception as e:
+                st.error(f"Ошибка загрузки клиентов: {e}")
+                clients = []
+
+            client_options = {"Обычный покупатель (Наличные)": None}
+            for cl in clients:
+                client_options[cl["full_name"]] = cl["id"]
                 
-                goods_summary = ", ".join(items_list_str)
+            selected_client_name = st.selectbox("Выберите покупателя (для Рассрочки обязательно)", list(client_options.keys()))
+            client_id = client_options[selected_client_name]
+            
+            is_installment = st.checkbox("Оформить как договор рассрочки")
+            
+            if is_installment and not client_id:
+                st.warning("⚠️ Для оформления рассрочки необходимо выбрать клиента из базы!")
                 
-                if pay_method == "Наличные":
+            if st.button("🚀 Подтвердить и провести продажу"):
+                if is_installment and not client_id:
+                    st.error(" Невозможно оформить рассрочку без привязки к клиенту.")
+                    return
+                
+                try:
+                    # Формируем название Договора из состава товаров для рассрочки
+                    items_summary = ", ".join([f"{i['product_name']} x{i['quantity']}" for i in st.session_state.cart])
+                    contract_name = f"Договор рассрочки: {items_summary}" if is_installment else f"Продажа: {items_summary}"
+                    
+                    # 1. Записываем каждую позицию из корзины в таблицу продаж
                     for item in st.session_state.cart:
-                        t_cost = item["qty"] * item["cost"]
-                        supabase.table("sales").insert({
-                            "id": sale_group_id, "date": date_full_str, "day": day_str,
-                            "name": f"{item['name']} (приход {item['batch_date']})", "pure_name": item["pure_name"], "batch_date": item["batch_date"],
-                            "qty": item["qty"], "total_sale": int(item["total"]), "total_cost": int(t_cost), "profit": int(item["total"] - t_cost),
-                            "payment": "Наличные", "down_payment": 0, "credit_balance": 0, "client_id": None
-                        }).execute()
-                else:
-                    contract_name = f"Договор рассрочки №{sale_group_id[:6]} [{goods_summary}] — {sel_client_name}"
-                    supabase.table("sales").insert({
-                        "id": sale_group_id, "date": date_full_str, "day": day_str,
-                        "name": contract_name, "pure_name": "рассрочка", "batch_date": day_str,
-                        "qty": 1, "total_sale": int(total_cart_sum), "total_cost": int(total_cost_sum), "profit": int(total_cart_sum - total_cost_sum),
-                        "payment": "Рассрочка", "down_payment": int(down_payment), "credit_balance": int(total_with_markup), "client_id": client_id
-                    }).execute()
-                
-                if pay_method == "Рассрочка" and client_id:
-                    for m in range(1, months + 1):
-                        due_date = (sale_date + timedelta(days=30 * m)).strftime("%Y-%m-%d")
-                        try:
-                            supabase.table("credit_payments").insert({
-                                "sale_id": sale_group_id, "client_id": client_id, "due_date": due_date,
-                                "amount_expected": int(monthly_payment), "amount_paid": 0, "status": "Не оплачен"
-                            }).execute()
-                        except: continue
-                            
-                st.session_state.cart = []
-                st.success("🎉 Сделка успешно проведена!")
-                st.rerun()
-            except Exception as e: st.error(f"Ошибка базы данных: {e}")
+                        sale_data = {
+                            "client_id": client_id,
+                            "product_id": item["product_id"],
+                            "batch_id": item["batch_id"],
+                            "quantity": item["quantity"],
+                            "selling_price": item["selling_price"],
+                            "purchase_price": item["purchase_price"],  # <--- Отправляем закупочную цену в Supabase
+                            "contract_name": contract_name,
+                            "total_amount": item["quantity"] * item["selling_price"],
+                            "is_installment": is_installment
+                        }
+                        supabase.table("sales").insert(sale_data).execute()
+                        
+                        # 2. Обновляем остатки на складе (в таблице партий batches)
+                        # Сначала считываем текущий остаток
+                        current_batch = supabase.table("batches").select("stock_quantity").eq("id", item["batch_id"]).single().execute().data
+                        new_qty = int(current_batch["stock_quantity"]) - item["quantity"]
+                        supabase.table("batches").update({"stock_quantity": new_qty}).eq("id", item["batch_id"]).execute()
+                    
+                    # 3. Если это рассрочка, обновляем долг клиента в таблице клиентов
+                    if is_installment:
+                        current_client = supabase.table("clients").select("total_debt").eq("id", client_id).single().execute().data
+                        new_debt = int(current_client.get("total_debt", 0) or 0) + total_sum
+                        supabase.table("clients").update({"total_debt": new_debt}).eq("id", client_id).execute()
+                    
+                    # 4. Если это наличные, фиксируем поступление в кассу
+                    if not is_installment:
+                        # (Здесь твоя стандартная логика добавления операции в cash.py / cash table)
+                        pass
+                        
+                    st.success("🎉 Продажа успешно проведена! Остатки списаны.")
+                    st.session_state.cart = []
+                    st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"Ошибка при проведении операции: {e}")
