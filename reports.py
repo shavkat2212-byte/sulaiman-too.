@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Отчеты и Аналитика
-# Версия программы: 1.2 (Универсальный конвертер и исправление вывода старых дат)
+# Версия программы: 1.3.2 (Исправление вывода старых номеров договоров №202607 на экране)
 
 import streamlit as st
 import pandas as pd
@@ -14,13 +14,11 @@ def format_any_date(date_str, include_time=False):
         return "-"
     date_str = str(date_str).strip()
     
-    # Если дата уже содержит точки (новый формат), просто возвращаем её
     if "." in date_str[:10]:
         return date_str
         
-    # Если дата в старом формате с дефисами YYYY-MM-DD
     try:
-        if " " in date_str: # Если есть время ЧЧ:ММ
+        if " " in date_str:
             date_part, time_part = date_str.split(" ")
             parsed_d = datetime.strptime(date_part, "%Y-%m-%d").strftime("%d.%m.%Y")
             return f"{parsed_d} {time_part}" if include_time else parsed_d
@@ -30,10 +28,23 @@ def format_any_date(date_str, include_time=False):
     except:
         return date_str
 
+def fix_contract_name_on_fly(name_str, date_str):
+    """Автоматически заменяет ошибочный номер №202607 на дату продажи на экране"""
+    if not name_str:
+        return name_str
+    
+    # Если в названии договора затесался баг №202607
+    if "№202607" in str(name_str):
+        # Вытаскиваем только чистую дату ДД.ММ.ГГГГ из даты операции
+        clean_date = format_any_date(date_str, include_time=False)
+        # Генерируем красивый номер на основе даты
+        new_num = clean_date.replace(".", "")[:4]
+        return str(name_str).replace("№202607", f"№{new_num}")
+    return name_str
+
 def show_reports_page():
     st.header("📊 Аналитика и история продаж")
     
-    # Загружаем продажи и кассовые операции по погашению рассрочек
     sales_all = supabase.table("sales").select("*").order("date", desc=True).execute()
     ops_res = supabase.table("cash_operations").select("*").order("date", desc=True).execute()
     
@@ -43,7 +54,6 @@ def show_reports_page():
 
     df = pd.DataFrame(sales_all.data)
     
-    # Приводим поле day к стандартному типу date для фильтрации
     def parse_day_for_filter(x):
         try:
             if "." in str(x):
@@ -61,7 +71,6 @@ def show_reports_page():
         start_date, end_date = date_range
         filtered_df = df[(df['day_obj'] >= start_date) & (df['day_obj'] <= end_date)]
         
-        # Фильтруем оплаты по рассрочкам для нижнего отчета
         filtered_ops_data = []
         if ops_res.data:
             for op in ops_res.data:
@@ -77,27 +86,19 @@ def show_reports_page():
                 except:
                     continue
         
-        # Считаем финансовые показатели
         total_sales_cash = filtered_df[filtered_df['payment'] == 'Наличные']['total_sale'].sum()
         total_down_payments = filtered_df[filtered_df['payment'] == 'Рассрочка']['down_payment'].sum()
         
-        # Сумма фактически внесенных платежей по рассрочкам из cash_operations
         total_credit_collected = 0.0
         if filtered_ops_data:
             for op in filtered_ops_data:
                 if "Погашение рассрочки" in str(op.get("comment", "")):
                     total_credit_collected += float(op["amount"])
 
-        # Общая чистая выручка кассы = Наличные + Первоначальные взносы + Погашения рассрочек
         total_revenue = total_sales_cash + total_down_payments + total_credit_collected
-        
-        # Себестоимость проданного товара (закупка)
         total_cost = filtered_df['total_cost'].sum()
-        
-        # Валовая прибыль (Выручка - Закупка проданного)
         total_profit = total_revenue - total_cost
 
-        # Блок красивых финансовых метрик
         st.markdown("---")
         m1, m2, m3 = st.columns(3)
         m1.metric("💵 Общая выручка (Все приходы)", f"{int(total_revenue):,} сом")
@@ -114,12 +115,14 @@ def show_reports_page():
         st.subheader("📋 Детализация списка продаж")
         
         if not filtered_df.empty:
-            # Формируем красивую таблицу для отображения на экране
             report_display = []
             for _, row in filtered_df.iterrows():
+                # НАЛЕТУ ИСПРАВЛЯЕМ ТЕКСТ СТАРОГО ДОГОВОРА ДЛЯ ЭКРАНА
+                fixed_name = fix_contract_name_on_fly(row['name'], row['date'])
+                
                 report_display.append({
                     "Дата операции": format_any_date(row['date'], include_time=True),
-                    "Наименование договора / Товара": row['name'],
+                    "Наименование договора / Товара": fixed_name,
                     "Кол-во": int(row['qty']),
                     "Тип оплаты": row['payment'],
                     "Закупка (сом)": int(row['total_cost']),
@@ -127,40 +130,33 @@ def show_reports_page():
                     "Взнос (Нал)": int(row.get('down_payment', 0) or 0),
                     "Остаток долга (+наценка)": int(row.get('credit_balance', 0) or 0),
                     "Прибыль (сом)": int(row['profit']),
-                    # скрытое поле для умной отмены
                     "sale_id": row['id'],
                     "raw_payment": row['payment']
                 })
             
             df_display = pd.DataFrame(report_display)
-            
-            # Отображаем таблицу БЕЗ служебных столбцов отмены
             st.dataframe(
                 df_display.drop(columns=["sale_id", "raw_payment"]), 
                 use_container_width=True, 
                 hide_index=True
             )
             
-            # Экспорт в Excel
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                 df_display.drop(columns=["sale_id", "raw_payment"]).to_excel(writer, index=False, sheet_name='Отчет по продажам')
             
             st.download_button(
-                label="📥 Скачать данный отчет в Excel",
+                label="📥 Скачать данный отчет in Excel",
                 data=buffer.getvalue(),
                 file_name=f"Отчет_Сулайман_Тоо_{start_date}_to_{end_date}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
             
-            # -----------------------------------------------------------------
-            # БЛОК УМНОЙ ОТМЕНЫ (УДАЛЕНИЯ) ПРОДАЖ
-            # -----------------------------------------------------------------
+            # БЛОК УМНОЙ ОТМЕНЫ
             st.markdown("---")
             st.subheader("⚙️ Управление и отмена продаж")
             
-            # Выбор продажи для отмены по названию и дате
             cancel_options = {f"{row['Дата операции']} | {row['Наименование договора / Товара']}": row for idx, row in df_display.iterrows()}
             selected_to_cancel = st.selectbox("🚫 Выберите операцию для её полной отмены и возврата остатков:", ["-- Не выбрано --"] + list(cancel_options.keys()))
             
@@ -170,52 +166,43 @@ def show_reports_page():
                 if st.button("🚨 Подтвердить и БЕЗВОЗВРАТНО УДАЛИТЬ продажу", type="primary", use_container_width=True):
                     with st.spinner("⏳ Выполняется разбор продажи и возврат товаров на склад..."):
                         try:
-                            # 1. Если это обычная продажа (Наличные), восстанавливаем товар на складе
                             if s_del["raw_payment"] == "Наличные":
-                                # Извлекаем имя партии из текста (приход YYYY-MM-DD или ДД.ММ.ГГГГ)
                                 match = re.search(r"\(приход\s+([\d\.-]+)\)", s_del["Наименование договора / Товара"])
                                 if match:
                                     b_date_raw = match.group(1)
-                                    # Если дата в названии договора переформатирована в ДД.ММ.ГГГГ, переводим обратно для БД
                                     if "." in b_date_raw:
-                                        b_date = datetime.strptime(b_date_raw, "%d.%m.%Y").strftime("%Y-%m-%d")
+                                        b_date = datetime.strptime(b_date_raw, "%d.%m.%Y").date().strftime("%Y-%m-%d")
                                     else:
                                         b_date = b_date_raw
                                         
                                     p_name = str(s_del["Наименование договора / Товара"]).split(" (приход")[0].strip().lower()
                                     
-                                    # Ищем эту партию на складе
                                     batch_res = supabase.table("products").select("id", "qty").eq("name", p_name).eq("date", b_date).execute()
                                     if batch_res.data:
                                         old_qty = int(batch_res.data[0]["qty"])
                                         new_qty = old_qty + int(s_del["Кол-во"])
                                         supabase.table("products").update({"qty": new_qty}).eq("id", batch_res.data[0]["id"]).execute()
                                 
-                            # 2. Если это Рассрочка, нужно разобрать товары по строкам из состава договора
                             elif s_del["raw_payment"] == "Рассрочка":
-                                # Вытаскиваем все элементы из квадратных скобок [Товар x1 шт., Товар2 x2 шт.]
                                 match_items = re.search(r"\[(.*?)\]", s_del["Наименование договора / Товара"])
                                 if match_items:
                                     items_str = match_items.group(1)
                                     parts = items_str.split(", ")
                                     for part in parts:
-                                        # Извлекаем название и количество
                                         item_match = re.search(r"(.*)\s+\((\d+)\s+шт\.\)", part)
                                         if item_match:
                                             p_name = item_match.group(1).strip().lower()
                                             return_qty = int(item_match.group(2))
                                             
-                                            # Возвращаем в самую свежую партию этого товара с остатком > 0
                                             b_res = supabase.table("products").select("id", "qty").eq("name", p_name).gt("qty", 0).order("date", desc=True).execute()
                                             if b_res.data:
                                                 new_qty = int(b_res.data[0]["qty"]) + return_qty
                                                 supabase.table("products").update({"qty": new_qty}).eq("id", b_res.data[0]["id"]).execute()
                             
-                            # 3. Полностью удаляем запись продажи и связанные графики платежей из Supabase
                             supabase.table("sales").delete().eq("id", s_del["sale_id"]).execute()
                             supabase.table("credit_payments").delete().eq("sale_id", s_del["sale_id"]).execute()
                             
-                            st.success("🎉 Операция успешно отменена! Товары возвращены на склад, графики удалены.")
+                            st.success("🎉 Операция успешно отменена!")
                             st.rerun()
                         except Exception as e:
                             st.error(f"Ошибка при удалении продажи: {e}")
@@ -232,10 +219,7 @@ def show_supplier_page():
             if supplier:
                 now_formatted = datetime.now().strftime("%d.%m.%Y %H:%M")
                 supabase.table("supplier_payments").insert({
-                    "date": now_formatted, 
-                    "supplier": supplier.strip(), 
-                    "amount": amount, 
-                    "comment": comment
+                    "date": now_formatted, "supplier": supplier.strip(), "amount": amount, "comment": comment
                 }).execute()
                 st.success("Выплата отправлена!")
                 st.rerun()
@@ -243,8 +227,6 @@ def show_supplier_page():
     payments_res = supabase.table("supplier_payments").select("*").order("id", desc=True).execute()
     if payments_res.data:
         df_pay = pd.DataFrame(payments_res.data).drop(columns=["id", "created_at"], errors="ignore")
-        
-        # Переводим даты выплат поставщикам в ДД.ММ.ГГГГ на экране
         df_pay["date"] = df_pay["date"].apply(lambda x: format_any_date(x, include_time=True))
         df_pay = df_pay.rename(columns={"date": "Дата выплаты", "supplier": "Контрагент", "amount": "Сумма (сом)", "comment": "Комментарий"})
         st.dataframe(df_pay[["Дата выплаты", "Контрагент", "Сумма (сом)", "Комментарий"]], use_container_width=True, hide_index=True)
