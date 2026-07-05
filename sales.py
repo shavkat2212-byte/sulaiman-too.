@@ -1,3 +1,6 @@
+# Магазин «Сулайман-Тоо» — Модуль: Продажи
+# Версия программы: 1.2 (Исправлены уникальные номера договоров и ДД.ММ.ГГГГ формат дат)
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
@@ -19,7 +22,12 @@ def show_sales_page():
         sel_display = st.selectbox("🔍 Выберите товар", unique_names)
         p_key = sel_display.lower()
         
-        batches_options = {f"Поступление от {datetime.strptime(row['date'], '%Y-%m-%d').strftime('%d.%M.%Y') if '-' in row['date'] else row['date']} (Остаток: {row['qty']} шт.)": row["id"] for row in stock_res.data if row["name"] == p_key}
+        # Перевод отображения даты партии в формат ДД.ММ.ГГГГ
+        def format_batch_date(d_str):
+            try: return datetime.strptime(d_str, '%Y-%m-%d').strftime('%d.%m.%Y')
+            except: return d_str
+
+        batches_options = {f"Поступление от {format_batch_date(row['date'])} (Остаток: {row['qty']} шт.)": row["id"] for row in stock_res.data if row["name"] == p_key}
         selected_batch_label = st.selectbox("📦 Выберите партию", list(batches_options.keys()))
         batch_id = batches_options[selected_batch_label]
         chosen_batch = supabase.table("products").select("*").eq("id", batch_id).execute().data[0]
@@ -104,10 +112,10 @@ def show_sales_page():
             base_group_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
             day_str = sale_date.strftime("%Y-%m-%d")
             
-            # ФОРМАТИРОВАНИЕ ДАТЫ: День.Месяц.Год ЧЧ:ММ
+            # Красивый читаемый формат времени ДД.ММ.ГГГГ ЧЧ:ММ
             formatted_date_full = f"{sale_date.strftime('%d.%m.%Y')} {datetime.now().strftime('%H:%M')}"
-            # Уникальный читаемый номер договора из ДДММ и минут
-            contract_num_suffix = datetime.now().strftime("%d%m-%H%M")
+            # Читаемый короткий номер договора (ДеньМесяц-ЧасыМинуты Секунды для уникальности)
+            contract_num_suffix = datetime.now().strftime("%d%m-%H%M%S")
             
             try:
                 total_cost_sum = 0.0
@@ -126,11 +134,8 @@ def show_sales_page():
                         t_cost = item["qty"] * item["cost"]
                         unique_sale_id = f"{base_group_id}_{idx}"
                         
-                        # Красивый перевод даты прихода товара для отображения
-                        try:
-                            b_date_formatted = datetime.strptime(item['batch_date'], '%Y-%m-%d').strftime('%d.%m.%Y')
-                        except:
-                            b_date_formatted = item['batch_date']
+                        try: b_date_formatted = datetime.strptime(item['batch_date'], '%Y-%m-%d').strftime('%d.%m.%Y')
+                        except: b_date_formatted = item['batch_date']
 
                         supabase.table("sales").insert({
                             "id": unique_sale_id, "date": formatted_date_full, "day": day_str,
@@ -139,7 +144,7 @@ def show_sales_page():
                             "payment": "Наличные", "down_payment": 0, "credit_balance": 0, "client_id": None
                         }).execute()
                 else:
-                    contract_name = f"Договор рассрочки №{contract_num_suffix} [{goods_summary}] — {sel_client_name}"
+                    contract_name = f"Договор рассрочки №{contract_num_suffix[:9]} [{goods_summary}] — {sel_client_name}"
                     supabase.table("sales").insert({
                         "id": base_group_id, "date": formatted_date_full, "day": day_str,
                         "name": contract_name, "pure_name": "рассрочка", "batch_date": day_str,
@@ -151,13 +156,12 @@ def show_sales_page():
                         supabase.table("cash_operations").insert({
                             "date": formatted_date_full, 
                             "amount": float(down_payment), 
-                            "comment": f"Перв. взнос по рассрочке №{contract_num_suffix} от {sel_client_name}"
+                            "comment": f"Перв. взнос по рассрочке №{contract_num_suffix[:9]} от {sel_client_name}"
                         }).execute()
                 
                 if pay_method == "Рассрочка" and client_id:
                     for m in range(1, months + 1):
                         due_date_obj = sale_date + timedelta(days=30 * m)
-                        # Переводим плановую дату в красивый вид ДД.ММ.ГГГГ
                         formatted_due_date = due_date_obj.strftime("%d.%m.%Y")
                         try:
                             supabase.table("credit_payments").insert({
