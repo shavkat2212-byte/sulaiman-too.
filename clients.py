@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Клиенты и рассрочки
-# Версия программы: 1.2 (Исправлено автоматическое чтение и сортировка дат в формате ДД.ММ.ГГГГ)
+# Версия программы: 1.3 (Исправлена обработка плановых месяцев и добавлена защита от битых дат .00.)
 
 import streamlit as st
 import pandas as pd
@@ -55,7 +55,7 @@ def show_clients_page():
                         st.rerun()
 
         st.markdown("---")
-        st.subheader("📋 Список всех клиентов в базе")
+        st.subheader("📋 Список всех клиентов in базе")
         if c_all.data:
             df_c = pd.DataFrame(c_all.data).drop(columns=["created_at"], errors="ignore")
             df_c = df_c.rename(columns={"id": "ID", "fio": "ФИО Клиента", "phone": "Телефон", "address": "Адрес проживания", "passport": "Паспортные данные"})
@@ -97,7 +97,9 @@ def show_clients_page():
                 unpaid_payments = [p for p in sale_payments if p["status"] != "Оплачен"]
                 
                 def get_unpaid_sort(x):
-                    try: return datetime.strptime(x.get('due_date', ''), "%d.%m.%Y")
+                    p_d = x.get('due_date', '')
+                    if ".00." in p_d: p_d = p_d.replace(".00.", f".{datetime.now().strftime('%m')}.")
+                    try: return datetime.strptime(p_d, "%d.%m.%Y")
                     except: return datetime.now()
 
                 unpaid_payments_sorted = sorted(unpaid_payments, key=get_unpaid_sort)
@@ -181,6 +183,10 @@ def show_clients_page():
                         if p["status"] != "Оплачен":
                             try:
                                 p_due_str = p["due_date"]
+                                # Умное исправление битых тестовых данных на лету
+                                if ".00." in p_due_str:
+                                    p_due_str = p_due_str.replace(".00.", f".{datetime.now().strftime('%m')}.")
+                                    
                                 if "." in p_due_str:
                                     due_date_obj = datetime.strptime(p_due_str, "%d.%m.%Y").date()
                                 else:
@@ -238,12 +244,19 @@ def show_clients_page():
                     
                     if client_payments:
                         def get_date_sort(x):
-                            try: return datetime.strptime(x['due_date'], "%d.%m.%Y")
+                            p_d = x['due_date']
+                            if ".00." in p_d: p_d = p_d.replace(".00.", f".{datetime.now().strftime('%m')}.")
+                            try: return datetime.strptime(p_d, "%d.%m.%Y")
                             except: return datetime.now()
 
                         for p_row in sorted(client_payments, key=get_date_sort):
+                            # Умное исправление отображения битых тестовых данных
+                            display_due_date = p_row['due_date']
+                            if ".00." in display_due_date:
+                                display_due_date = display_due_date.replace(".00.", f".{datetime.now().strftime('%m')}.")
+
                             col_p1, col_p2, col_p3, col_p4 = st.columns([2, 2, 2, 2])
-                            col_p1.write(f"📅 Срок: {p_row['due_date']}")
+                            col_p1.write(f"📅 Срок: {display_due_date}")
                             col_p2.write(f"💵 Ожидается: {int(p_row['amount_expected'])} сом")
                             col_p3.write(f"✅ Оплачено: {int(p_row['amount_paid'])} сом ({p_row['status']})")
                             
