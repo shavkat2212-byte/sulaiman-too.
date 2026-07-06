@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Отчеты и Аналитика
-# Версия программы: 1.5.0 (Интеграция с ролями пользователей)
+# Версия программы: 1.5.1 (Разделение на Аналитику для Админа и Ежедневный отчет для Кассира)
 
 import streamlit as st
 import pandas as pd
@@ -9,14 +9,11 @@ from datetime import datetime
 from database import supabase
 
 def format_any_date(date_str, include_time=False):
-    """Универсальная функция перевода дат из YYYY-MM-DD в ДД.ММ.ГГГГ на экране"""
     if not date_str:
         return "-"
     date_str = str(date_str).strip()
-    
     if "." in date_str[:10]:
         return date_str
-        
     try:
         if " " in date_str:
             date_part, time_part = date_str.split(" ")
@@ -29,10 +26,8 @@ def format_any_date(date_str, include_time=False):
         return date_str
 
 def fix_contract_name_on_fly(name_str, date_str):
-    """Автоматически заменяет ошибочный номер №202607 на дату продажи на экране"""
     if not name_str:
         return name_str
-    
     if "№202607" in str(name_str):
         clean_date = format_any_date(date_str, include_time=False)
         new_num = clean_date.replace(".", "")[:4]
@@ -40,14 +35,14 @@ def fix_contract_name_on_fly(name_str, date_str):
     return name_str
 
 def show_reports_page():
-    # Проверка на всякий случай
     user_role = st.session_state.get("user", {}).get("role", "Кассир")
-    if user_role != "Администратор":
-        st.error("🛑 У вас нет прав для просмотра аналитики и отчетов.")
-        return
-
-    st.header("📊 Аналитика и история продаж")
     
+    if user_role == "Администратор":
+        st.header("📊 Аналитика и история продаж (Панель Администратора)")
+    else:
+        st.header("📋 Ежедневный отчет по продажам (Панель Кассира)")
+
+    # Получаем данные из базы
     sales_all = supabase.table("sales").select("*").order("date", desc=True).execute()
     
     if not sales_all.data:
@@ -66,101 +61,118 @@ def show_reports_page():
             
     df['day_obj'] = df['day'].apply(parse_day_for_filter)
     
-    st.subheader("🔍 Выберите период для анализа")
-    date_range = st.date_input("Диапазон дат", value=(df['day_obj'].min(), df['day_obj'].max()))
-    
-    if isinstance(date_range, tuple) and len(date_range) == 2:
-        start_date, end_date = date_range
-        filtered_df = df[(df['day_obj'] >= start_date) & (df['day_obj'] <= end_date)]
-        
-        # 1. Наличные (Прямые продажи)
+    # --- ЛОГИКА ОТОБРАЖЕНИЯ И ФИЛЬТРАЦИИ ---
+    if user_role == "Администратор":
+        # Администратор выбирает любой период
+        st.subheader("🔍 Выберите период для анализа")
+        date_range = st.date_input("Диапазон дат", value=(df['day_obj'].min(), df['day_obj'].max()))
+        if isinstance(date_range, tuple) and len(date_range) == 2:
+            start_date, end_date = date_range
+            filtered_df = df[(df['day_obj'] >= start_date) & (df['day_obj'] <= end_date)]
+        else:
+            filtered_df = pd.DataFrame()
+    else:
+        # Кассир видит строго сегодняшние продажи
+        today_date = datetime.now().date()
+        filtered_df = df[df['day_obj'] == today_date]
+        st.info(f"📅 Отображаются операции за сегодня: **{today_date.strftime('%d.%m.%Y')}**")
+
+    if not filtered_df.empty:
+        # Считаем кассовые итоги
         df_cash = filtered_df[filtered_df['payment'] == 'Наличные']
         cash_turnover = float(df_cash['total_sale'].sum()) if not df_cash.empty else 0.0
-        cash_profit = float(df_cash['profit'].sum()) if not df_cash.empty else 0.0
         
-        # 2. Рассрочка (Ожидаемый доход при 100% выплате всех клиентов)
         df_credit = filtered_df[filtered_df['payment'] == 'Рассрочка']
         credit_turnover = float(df_credit['total_sale'].sum()) if not df_credit.empty else 0.0
         
-        credit_profit = 0.0
-        if not df_credit.empty:
-            for _, row in df_credit.iterrows():
-                cost = float(row.get("total_cost", 0) or 0)
-                down = float(row.get("down_payment", 0) or 0)
-                balance_markup = float(row.get("credit_balance", 0) or 0)
-                credit_profit += (down + balance_markup) - cost
-
-        # Итоговые показатели по чекам
         total_turnover = cash_turnover + credit_turnover
-        total_profit_combined = cash_profit + credit_profit
+
+        # ВЫВОД МЕТРИК НА ЭКРАН
+        st.markdown("---")
+        if user_role == "Администратор":
+            # Полные метрики с прибылью для Админа
+            cash_profit = float(df_cash['profit'].sum()) if not df_cash.empty else 0.0
+            credit_profit = 0.0
+            if not df_credit.empty:
+                for _, row in df_credit.iterrows():
+                    cost = float(row.get("total_cost", 0) or 0)
+                    down = float(row.get("down_payment", 0) or 0)
+                    balance_markup = float(row.get("credit_balance", 0) or 0)
+                    credit_profit += (down + balance_markup) - cost
+            total_profit_combined = cash_profit + credit_profit
+
+            col_t1, col_t2, col_t3 = st.columns(3)
+            col_t1.metric("💵 Оборот (Наличные)", f"{int(cash_turnover):,} сом")
+            col_t2.metric("📦 Оборот (Рассрочка)", f"{int(credit_turnover):,} сом")
+            col_t3.metric("🔥 Общий оборот", f"{int(total_turnover):,} сом")
+            
+            col_p1, col_p2, col_p3 = st.columns(3)
+            col_p1.metric("📈 Прибыль (Нал)", f"{int(cash_profit):,} сом")
+            col_p2.metric("📈 Прибыль (Рассрочка)", f"{int(credit_profit):,} сом")
+            col_p3.metric("🏆 Суммарная прибыль", f"{int(total_profit_combined):,} сом")
+        else:
+            # Ограниченные метрики выручки без себестоимости и прибыли для Кассира
+            col_k1, col_k2, col_k3 = st.columns(3)
+            col_k1.metric("🟢 Продажи за сегодня (Нал)", f"{int(cash_turnover):,} сом")
+            col_k2.metric("🔵 Оформлено рассрочек сегодня", f"{int(credit_turnover):,} сом")
+            col_k3.metric("🛍️ Общая выручка за день", f"{int(total_turnover):,} сом")
 
         st.markdown("---")
+        st.subheader("📋 Список оформленных чеков")
         
-        # Строка 1: Прямые наличные продажи
-        st.markdown("#### 🟢 Прямые продажи (Наличные)")
-        col_c1, col_c2 = st.columns(2)
-        col_c1.metric("Сумма продаж (Нал)", f"{int(cash_turnover):,} сом")
-        col_c2.metric("Чистая прибыль (Нал)", f"{int(cash_profit):,} сом")
-        
-        # Строка 2: Продажи в рассрочку
-        st.markdown("#### 🔵 Продажи в рассрочку (Прогноз)")
-        col_r1, col_r2 = st.columns(2)
-        col_r1.metric("Общая сумма чеков рассрочки", f"{int(credit_turnover):,} сом")
-        col_r2.metric("Ожидаемая прибыль (+наценка 3%/мес)", f"{int(credit_profit):,} сом")
-        
-        # Строка 3: Суммарные итоги
-        st.markdown("#### 🏛️ Итоговые показатели по магазину")
-        col_t1, col_t2 = st.columns(2)
-        col_t1.metric("🔥 Общий оборот продаж", f"{int(total_turnover):,} сом")
-        col_t2.metric("📈 Суммарная чистая прибыль (Ожидаемая)", f"{int(total_profit_combined):,} сом")
-
-        st.markdown("---")
-        st.subheader("📋 Детализация списка продаж")
-        
-        if not filtered_df.empty:
-            report_display = []
-            for _, row in filtered_df.iterrows():
-                fixed_name = fix_contract_name_on_fly(row['name'], row['date'])
-                
+        # Формируем таблицу на отображение
+        report_display = []
+        for _, row in filtered_df.iterrows():
+            fixed_name = fix_contract_name_on_fly(row['name'], row['date'])
+            
+            item_data = {
+                "Дата операции": format_any_date(row['date'], include_time=True),
+                "Наименование договора / Товара": fixed_name,
+                "Кол-во": int(row['qty']),
+                "Тип оплаты": row['payment'],
+                "Сумма продажи (сом)": int(row['total_sale']),
+                "Перв. взнос (Нал)": int(row.get('down_payment', 0) or 0),
+                "Остаток в рассрочку": int(row.get('credit_balance', 0) or 0),
+                "sale_id": row['id'],
+                "raw_payment": row['payment']
+            }
+            
+            # Колонки себестоимости и чистой прибыли добавляем ТОЛЬКО администратору
+            if user_role == "Администратор":
                 if row['payment'] == 'Рассрочка':
                     row_profit = (int(row.get('down_payment', 0) or 0) + int(row.get('credit_balance', 0) or 0)) - int(row['total_cost'])
                 else:
                     row_profit = int(row['profit'])
-
-                report_display.append({
-                    "Дата операции": format_any_date(row['date'], include_time=True),
-                    "Наименование договора / Товара": fixed_name,
-                    "Кол-во": int(row['qty']),
-                    "Тип оплаты": row['payment'],
-                    "Закупка (сом)": int(row['total_cost']),
-                    "Продажа (сом)": int(row['total_sale']),
-                    "Взнос (Нал)": int(row.get('down_payment', 0) or 0),
-                    "Остаток долга (+наценка)": int(row.get('credit_balance', 0) or 0),
-                    "Прибыль (сом)": int(row_profit),
-                    "sale_id": row['id'],
-                    "raw_payment": row['payment']
-                })
-            
-            df_display = pd.DataFrame(report_display)
-            st.dataframe(
-                df_display.drop(columns=["sale_id", "raw_payment"]), 
-                use_container_width=True, 
-                hide_index=True
+                item_data["Закупка (сом)"] = int(row['total_cost'])
+                item_data["Прибыль (сом)"] = int(row_profit)
+                
+            report_display.append(item_data)
+        
+        df_display = pd.DataFrame(report_display)
+        
+        # Убираем системные колонки перед выводом на экран
+        cols_to_drop = ["sale_id", "raw_payment"]
+        st.dataframe(
+            df_display.drop(columns=cols_to_drop, errors="ignore"), 
+            use_container_width=True, 
+            hide_index=True
+        )
+        
+        # Экспорт в Excel доступен обоим
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            df_display.drop(columns=cols_to_drop, errors="ignore").to_excel(writer, index=False, sheet_name='Отчет')
+        
+        st.download_button(
+            label="📥 Скачать этот отчет в Excel",
+            data=buffer.getvalue(),
+            file_name=f"Отчет_Сулайман_Тоо_{datetime.now().date()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
             )
-            
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                df_display.drop(columns=["sale_id", "raw_payment"]).to_excel(writer, index=False, sheet_name='Отчет по продажам')
-            
-            st.download_button(
-                label="📥 Скачать данный отчет в Excel",
-                data=buffer.getvalue(),
-                file_name=f"Отчет_Сулайман_Тоо_{start_date}_to_{end_date}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-            
-            # БЛОК УМНОЙ ОТМЕНЫ (Только для Администратора)
+        
+        # --- БЛОК ОТМЕНЫ ОПЕРАЦИЙ (Строго для Администратора) ---
+        if user_role == "Администратор":
             st.markdown("---")
             st.subheader("⚙️ Управление и отмена продаж")
             
@@ -200,8 +212,8 @@ def show_reports_page():
                             st.success("🎉 Операция успешно отменена!")
                             st.rerun()
                         except Exception as e: st.error(f"Ошибка при удалении продажи: {e}")
-        else:
-            st.info("Нет данных за выбранный период")
+    else:
+        st.info("Сегодня продаж еще не зафиксировано.")
 
 def show_supplier_page():
     user_role = st.session_state.get("user", {}).get("role", "Кассир")
