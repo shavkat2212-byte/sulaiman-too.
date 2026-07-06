@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Отчеты и Аналитика
-# Версия программы: 1.4.1 (Исправлена критическая ошибка NameError с переменной оборота кассы)
+# Версия программы: 1.4.2 (Полное исправление NameError с первоначальными взносами)
 
 import streamlit as st
 import pandas as pd
@@ -67,10 +67,6 @@ def show_reports_page():
         start_date, end_date = date_range
         filtered_df = df[(df['day_obj'] >= start_date) & (df['day_obj'] <= end_date)]
         
-        # -----------------------------------------------------------------
-        # ИСПРАВЛЕННЫЙ РАСЧЁТ ПОКАЗАТЕЛЕЙ ДОХОДНОСТИ
-        # -----------------------------------------------------------------
-        
         # 1. Наличные (Прямые продажи)
         df_cash = filtered_df[filtered_df['payment'] == 'Наличные']
         cash_turnover = df_cash['total_sale'].sum()
@@ -79,6 +75,7 @@ def show_reports_page():
         # 2. Рассрочка (Ожидаемый доход при 100% выплате всех клиентов)
         df_credit = filtered_df[filtered_df['payment'] == 'Рассрочка']
         credit_turnover = df_credit['total_sale'].sum()
+        total_down_payments = df_credit['down_payment'].sum()
         
         credit_profit = 0.0
         for _, row in df_credit.iterrows():
@@ -102,30 +99,24 @@ def show_reports_page():
                         total_credit_collected += float(op["amount"])
                 except: continue
 
-        # Живая выручка кассы на сегодня
-        total_cash_revenue = cash_turnover + total_down_payments if 'total_down_payments' in locals() else cash_turnover + df_credit['down_payment'].sum() + total_credit_collected
-        
-        # Общие итоги по отгрузкам (Сумма наличных чеков + Сумма рассрочек)
+        # Финансовые итоги
+        total_revenue = cash_turnover + total_down_payments + total_credit_collected
         total_turnover = cash_turnover + credit_turnover
         total_profit_combined = cash_profit + credit_profit
 
-        # Вывод красивых блоков метрик на экран
         st.markdown("---")
         
-        # Строка 1: Прямые наличные продажи
         st.markdown("#### 🟢 Прямые продажи (Наличные)")
         col_c1, col_c2 = st.columns(2)
         col_c1.metric("Сумма продаж (Нал)", f"{int(cash_turnover):,} сом")
         col_c2.metric("Чистая прибыль (Нал)", f"{int(cash_profit):,} сом")
         
-        # Строка 2: Продажи в рассрочку
         st.markdown("#### 🔵 Продажи в рассрочку (Прогноз)")
         col_r1, col_r2 = st.columns(2)
         col_r1.metric("Общая сумма чеков рассрочки", f"{int(credit_turnover):,} сом")
         col_r2.metric("Ожидаемая прибыль (+наценка 3%/мес)", f"{int(credit_profit):,} сом")
         
-        # Строка 3: Суммарные итоги
-        st.markdown("#### 🏛 vote; Итоговые показатели по магазину")
+        st.markdown("#### 🏛️ Итоговые показатели по магазину")
         col_t1, col_t2 = st.columns(2)
         col_t1.metric("🔥 Общий оборот продаж", f"{int(total_turnover):,} сом")
         col_t2.metric("📈 Суммарная чистая прибыль (Ожидаемая)", f"{int(total_profit_combined):,} сом")
