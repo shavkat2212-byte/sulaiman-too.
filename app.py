@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Главный модуль: Авторизация и Маршрутизация
-# Версия программы: 1.5.0 (Внедрена система ролей)
+# Версия программы: 1.5.1 (Кассиру открыты Касса и Отчеты в режиме просмотра)
 
 import streamlit as st
 from database import authenticate_user, create_new_user, check_has_users
@@ -27,7 +27,6 @@ if "user" not in st.session_state:
 if st.session_state.user is None:
     st.title("🛍️ Автоматизированная система «Сулайман-Тоо»")
     
-    # Защита от первого запуска: если пользователей вообще нет, даем создать админа
     if not check_has_users():
         st.warning("⚠️ В системе не зарегистрировано ни одного пользователя. Создайте первого Администратора:")
         with st.form("first_run_form"):
@@ -44,7 +43,6 @@ if st.session_state.user is None:
                     st.error("Заполните все поля!")
         st.stop()
 
-    # Обычная форма логина
     st.subheader("🔐 Вход в систему")
     with st.form("login_form"):
         username_input = st.text_input("Имя пользователя (Логин)")
@@ -61,7 +59,7 @@ if st.session_state.user is None:
                 st.error("❌ Неверный логин или пароль")
     st.stop()
 
-# --- Раздел, если пользователь уже авторизован ---
+# --- Раздел авторизованного пользователя ---
 current_user = st.session_state.user
 user_role = current_user["role"]
 
@@ -75,18 +73,11 @@ if st.sidebar.button("🚪 Выйти из аккаунта", use_container_widt
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🛠️ Главное меню")
 
-# Динамическое формирование меню в зависимости от роли
-if user_role == "Администратор":
-    menu_options = ["📦 Склад", "🛒 Продажи", "👥 Клиенты", "💵 Касса", "📊 Отчеты"]
-else:
-    # Для Кассира скрываем Кассу (там чистая прибыль) и Отчеты
-    # Если на Складе у тебя есть и редактирование, и просмотр, то Кассир сможет зайти,
-    # но саму логику скрытия кнопок изменения мы внедрим внутрь страниц.
-    menu_options = ["📦 Склад", "🛒 Продажи", "👥 Клиенты"]
-
+# ТЕПЕРЬ ВСЕ вкладки видны и Кассиру, ограничения будут внутри модулей
+menu_options = ["📦 Склад", "🛒 Продажи", "👥 Клиенты", "💵 Касса", "📊 Отчеты"]
 choice = st.sidebar.radio("Перейти в раздел:", menu_options)
 
-# Дополнительный блок управления пользователями для Администратора
+# Панель управления пользователями доступна ТОЛЬКО Администратору
 if user_role == "Администратор":
     st.sidebar.markdown("---")
     with st.sidebar.expander("➕ Создать пользователя"):
@@ -104,7 +95,7 @@ if user_role == "Администратор":
                     st.error("Заполните поля")
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Магазин «Сулайман-Тоо» v1.5.0")
+st.sidebar.caption("Магазин «Сулайман-Тоо» v1.5.1")
 
 # Роутинг страниц
 if choice == "📦 Склад":
@@ -114,6 +105,9 @@ elif choice == "🛒 Продажи":
 elif choice == "👥 Клиенты":
     show_clients_page()
 elif choice == "💵 Касса":
+    # Передаем управление в cash.py. 
+    # ВАЖНО: Внутри файла cash.py добавь проверку: 
+    # if st.session_state.user["role"] == "Кассир", то скрывай кнопки внесения/изъятия.
     show_cash_page()
 elif choice == "📊 Отчеты":
     show_reports_page()
