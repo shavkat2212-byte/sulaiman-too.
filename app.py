@@ -1,7 +1,8 @@
-# Магазин «Сулайман-Тоо» — Главный модуль: Маршрутизация (Без авторизации)
-# Версия программы: 1.4.5 (Полный откат к открытому доступу)
+# Магазин «Сулайман-Тоо» — Главный модуль: Авторизация и Маршрутизация
+# Версия программы: 1.5.0 (Внедрена система ролей)
 
 import streamlit as st
+from database import authenticate_user, create_new_user, check_has_users
 
 # Импорты модулей
 from stock import show_stock_page
@@ -18,22 +19,94 @@ st.set_page_config(page_title="Магазин «Сулайман-Тоо»", page
 if "cart" not in st.session_state:
     st.session_state.cart = []
 
+# Инициализация состояния авторизации
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+# --- Окно авторизации ---
+if st.session_state.user is None:
+    st.title("🛍️ Автоматизированная система «Сулайман-Тоо»")
+    
+    # Защита от первого запуска: если пользователей вообще нет, даем создать админа
+    if not check_has_users():
+        st.warning("⚠️ В системе не зарегистрировано ни одного пользователя. Создайте первого Администратора:")
+        with st.form("first_run_form"):
+            new_login = st.text_input("Логин администратора")
+            new_pass = st.text_input("Пароль администратора", type="password")
+            if st.form_submit_button("Создать администратора и войти"):
+                if new_login and new_pass:
+                    if create_new_user(new_login, new_pass, "Администратор"):
+                        st.success("Администратор успешно создан! Теперь войдите в систему.")
+                        st.rerun()
+                    else:
+                        st.error("Не удалось создать пользователя.")
+                else:
+                    st.error("Заполните все поля!")
+        st.stop()
+
+    # Обычная форма логина
+    st.subheader("🔐 Вход в систему")
+    with st.form("login_form"):
+        username_input = st.text_input("Имя пользователя (Логин)")
+        password_input = st.text_input("Пароль", type="password")
+        submit_login = st.form_submit_button("Войти")
+        
+        if submit_login:
+            user_data = authenticate_user(username_input, password_input)
+            if user_data:
+                st.session_state.user = user_data
+                st.success(f"Добро пожаловать, {user_data['username']}!")
+                st.rerun()
+            else:
+                st.error("❌ Неверный логин или пароль")
+    st.stop()
+
+# --- Раздел, если пользователь уже авторизован ---
+current_user = st.session_state.user
+user_role = current_user["role"]
+
+st.sidebar.markdown(f"### 👤 {current_user['username']}")
+st.sidebar.info(f"Роль: **{user_role}**")
+
+if st.sidebar.button("🚪 Выйти из аккаунта", use_container_width=True):
+    st.session_state.user = None
+    st.rerun()
+
+st.sidebar.markdown("---")
 st.sidebar.markdown("### 🛠️ Главное меню")
 
-# Твои новые переименованные разделы (открыты для всех)
-menu_options = [
-    "📦 Склад", 
-    "🛒 Продажи", 
-    "👥 Клиенты", 
-    "💵 Касса", 
-    "📊 Отчеты"
-]
+# Динамическое формирование меню в зависимости от роли
+if user_role == "Администратор":
+    menu_options = ["📦 Склад", "🛒 Продажи", "👥 Клиенты", "💵 Касса", "📊 Отчеты"]
+else:
+    # Для Кассира скрываем Кассу (там чистая прибыль) и Отчеты
+    # Если на Складе у тебя есть и редактирование, и просмотр, то Кассир сможет зайти,
+    # но саму логику скрытия кнопок изменения мы внедрим внутрь страниц.
+    menu_options = ["📦 Склад", "🛒 Продажи", "👥 Клиенты"]
 
 choice = st.sidebar.radio("Перейти в раздел:", menu_options)
 
-st.sidebar.markdown("---")
-st.sidebar.caption("Магазин «Сулайман-Тоо» v1.4.5")
+# Дополнительный блок управления пользователями для Администратора
+if user_role == "Администратор":
+    st.sidebar.markdown("---")
+    with st.sidebar.expander("➕ Создать пользователя"):
+        with st.form("create_user_sidebar"):
+            u_name = st.text_input("Логин")
+            u_pass = st.text_input("Пароль", type="password")
+            u_role = st.selectbox("Роль", ["Кассир", "Администратор"])
+            if st.form_submit_button("Зарегистрировать"):
+                if u_name and u_pass:
+                    if create_new_user(u_name, u_pass, u_role):
+                        st.success(f"Пользователь {u_name} создан!")
+                    else:
+                        st.error("Ошибка (возможно логин занят)")
+                else:
+                    st.error("Заполните поля")
 
+st.sidebar.markdown("---")
+st.sidebar.caption("Магазин «Сулайман-Тоо» v1.5.0")
+
+# Роутинг страниц
 if choice == "📦 Склад":
     show_stock_page()
 elif choice == "🛒 Продажи":
