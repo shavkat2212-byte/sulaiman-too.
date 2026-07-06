@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Отчеты и Аналитика
-# Версия программы: 1.4.5 (Откат, чистый расчет раздельной прибыли)
+# Версия программы: 1.5.0 (Интеграция с ролями пользователей)
 
 import streamlit as st
 import pandas as pd
@@ -40,6 +40,12 @@ def fix_contract_name_on_fly(name_str, date_str):
     return name_str
 
 def show_reports_page():
+    # Проверка на всякий случай
+    user_role = st.session_state.get("user", {}).get("role", "Кассир")
+    if user_role != "Администратор":
+        st.error("🛑 У вас нет прав для просмотра аналитики и отчетов.")
+        return
+
     st.header("📊 Аналитика и история продаж")
     
     sales_all = supabase.table("sales").select("*").order("date", desc=True).execute()
@@ -154,7 +160,7 @@ def show_reports_page():
                 use_container_width=True
             )
             
-            # БЛОК УМНОЙ ОТМЕНЫ
+            # БЛОК УМНОЙ ОТМЕНЫ (Только для Администратора)
             st.markdown("---")
             st.subheader("⚙️ Управление и отмена продаж")
             
@@ -198,6 +204,11 @@ def show_reports_page():
             st.info("Нет данных за выбранный период")
 
 def show_supplier_page():
+    user_role = st.session_state.get("user", {}).get("role", "Кассир")
+    if user_role != "Администратор":
+        st.error("🛑 У вас нет прав для работы с поставщиками.")
+        return
+        
     st.header("Выплаты поставщикам и контрагентам")
     with st.form("supplier_payment"):
         supplier = st.text_input("Название контрагента")
