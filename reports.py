@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Отчеты и Аналитика
-# Версия программы: 1.4.3 (ФИНАЛЬНОЕ ИСПРАВЛЕНИЕ: Полное удаление переменной cash_turnover)
+# Версия программы: 1.4.4 (ИСПРАВЛЕНО: Полное и гарантированное объявление cash_turnover)
 
 import streamlit as st
 import pandas as pd
@@ -67,25 +67,34 @@ def show_reports_page():
         start_date, end_date = date_range
         filtered_df = df[(df['day_obj'] >= start_date) & (df['day_obj'] <= end_date)]
         
-        # 1. Наличные (Прямые продажи)
-        df_cash = filtered_df[filtered_df['payment'] == 'Наличные']
-        cash_profit = df_cash['profit'].sum()
-        
-        # 2. Рассрочка (Ожидаемый доход при 100% выплате всех клиентов)
-        df_credit = filtered_df[filtered_df['payment'] == 'Рассрочка']
-        credit_turnover = df_credit['total_sale'].sum()
-        total_down_payments = df_credit['down_payment'].sum()
-        
+        # --- ГАРАНТИРОВАННАЯ ИНИЦИАЛИЗАЦИЯ ВСЕХ ФИНАНСОВЫХ ПЕРЕМЕННЫХ ---
+        cash_turnover = 0.0
+        cash_profit = 0.0
+        credit_turnover = 0.0
+        total_down_payments = 0.0
         credit_profit = 0.0
-        for _, row in df_credit.iterrows():
-            cost = float(row.get("total_cost", 0) or 0)
-            down = float(row.get("down_payment", 0) or 0)
-            balance_markup = float(row.get("credit_balance", 0) or 0)
-            credit_profit += (down + balance_markup) - cost
-
-        # 3. Фактические приходы по рассрочкам из cash_operations (для общей кассы)
-        ops_res = supabase.table("cash_operations").select("*").execute()
         total_credit_collected = 0.0
+        
+        # 1. Расчет Наличных (Прямые продажи)
+        df_cash = filtered_df[filtered_df['payment'] == 'Наличные']
+        if not df_cash.empty:
+            cash_turnover = float(df_cash['total_sale'].sum())
+            cash_profit = float(df_cash['profit'].sum())
+        
+        # 2. Расчет Рассрочки (Ожидаемый доход при 100% выплате)
+        df_credit = filtered_df[filtered_df['payment'] == 'Рассрочка']
+        if not df_credit.empty:
+            credit_turnover = float(df_credit['total_sale'].sum())
+            total_down_payments = float(df_credit['down_payment'].sum())
+            
+            for _, row in df_credit.iterrows():
+                cost = float(row.get("total_cost", 0) or 0)
+                down = float(row.get("down_payment", 0) or 0)
+                balance_markup = float(row.get("credit_balance", 0) or 0)
+                credit_profit += (down + balance_markup) - cost
+
+        # 3. Фактические сборы по рассрочкам из cash_operations
+        ops_res = supabase.table("cash_operations").select("*").execute()
         if ops_res.data:
             for op in ops_res.data:
                 try:
@@ -94,12 +103,14 @@ def show_reports_page():
                         op_day = datetime.strptime(op_date_str[:10], "%d.%m.%Y").date()
                     else:
                         op_day = datetime.strptime(op_date_str[:10], "%Y-%m-%d").date()
+                    
                     if start_date <= op_day <= end_date and "Погашение рассрочки" in str(op.get("comment", "")):
                         total_credit_collected += float(op["amount"])
                 except: continue
 
-        # Итоговый оборот продаж по чекам (Сумма наличных + Сумма рассрочек)
-        total_turnover = df_cash['total_sale'].sum() + credit_turnover
+        # Финальные агрегации (Ошибки исключены, так как все переменные выше равны минимум 0.0)
+        total_revenue = cash_turnover + total_down_payments + total_credit_collected
+        total_turnover = cash_turnover + credit_turnover
         total_profit_combined = cash_profit + credit_profit
 
         st.markdown("---")
@@ -107,7 +118,7 @@ def show_reports_page():
         # Строка 1: Прямые наличные продажи
         st.markdown("#### 🟢 Прямые продажи (Наличные)")
         col_c1, col_c2 = st.columns(2)
-        col_c1.metric("Сумма продаж (Нал)", f"{int(df_cash['total_sale'].sum()):,} сом")
+        col_c1.metric("Сумма продаж (Нал)", f"{int(cash_turnover):,} сом")
         col_c2.metric("Чистая прибыль (Нал)", f"{int(cash_profit):,} сом")
         
         # Строка 2: Продажи в рассрочку
