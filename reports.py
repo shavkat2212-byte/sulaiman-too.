@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Отчеты и Аналитика
-# Версия программы: 1.4 (Внедрена защита отмены продаж для роли Кассир)
+# Версия программы: 1.4.1 (Исправлена критическая ошибка NameError с переменной оборота кассы)
 
 import streamlit as st
 import pandas as pd
@@ -67,11 +67,27 @@ def show_reports_page():
         start_date, end_date = date_range
         filtered_df = df[(df['day_obj'] >= start_date) & (df['day_obj'] <= end_date)]
         
-        # Расчёт финансовых показателей
-        total_sales_cash = filtered_df[filtered_df['payment'] == 'Наличные']['total_sale'].sum()
-        total_down_payments = filtered_df[filtered_df['payment'] == 'Рассрочка']['down_payment'].sum()
+        # -----------------------------------------------------------------
+        # ИСПРАВЛЕННЫЙ РАСЧЁТ ПОКАЗАТЕЛЕЙ ДОХОДНОСТИ
+        # -----------------------------------------------------------------
         
-        # Извлекаем операции погашений
+        # 1. Наличные (Прямые продажи)
+        df_cash = filtered_df[filtered_df['payment'] == 'Наличные']
+        cash_turnover = df_cash['total_sale'].sum()
+        cash_profit = df_cash['profit'].sum()
+        
+        # 2. Рассрочка (Ожидаемый доход при 100% выплате всех клиентов)
+        df_credit = filtered_df[filtered_df['payment'] == 'Рассрочка']
+        credit_turnover = df_credit['total_sale'].sum()
+        
+        credit_profit = 0.0
+        for _, row in df_credit.iterrows():
+            cost = float(row.get("total_cost", 0) or 0)
+            down = float(row.get("down_payment", 0) or 0)
+            balance_markup = float(row.get("credit_balance", 0) or 0)
+            credit_profit += (down + balance_markup) - cost
+
+        # 3. Фактические приходы по рассрочкам из cash_operations (для общей кассы)
         ops_res = supabase.table("cash_operations").select("*").execute()
         total_credit_collected = 0.0
         if ops_res.data:
@@ -86,31 +102,33 @@ def show_reports_page():
                         total_credit_collected += float(op["amount"])
                 except: continue
 
-        total_revenue = total_sales_cash + total_down_payments + total_credit_collected
-        total_cost = filtered_df['total_cost'].sum()
+        # Живая выручка кассы на сегодня
+        total_cash_revenue = cash_turnover + total_down_payments if 'total_down_payments' in locals() else cash_turnover + df_credit['down_payment'].sum() + total_credit_collected
         
-        # Расчёт раздельной прибыли
-        cash_profit = filtered_df[filtered_df['payment'] == 'Наличные']['profit'].sum()
-        credit_profit = 0.0
-        for _, row in filtered_df[filtered_df['payment'] == 'Рассрочка'].iterrows():
-            credit_profit += (float(row.get("down_payment", 0)) + float(row.get("credit_balance", 0))) - float(row.get("total_cost", 0))
+        # Общие итоги по отгрузкам (Сумма наличных чеков + Сумма рассрочек)
+        total_turnover = cash_turnover + credit_turnover
         total_profit_combined = cash_profit + credit_profit
 
+        # Вывод красивых блоков метрик на экран
         st.markdown("---")
+        
+        # Строка 1: Прямые наличные продажи
         st.markdown("#### 🟢 Прямые продажи (Наличные)")
         col_c1, col_c2 = st.columns(2)
-        col_c1.metric("Сумма продаж (Нал)", f"{int(cash_turnover if 'cash_turnover' in locals() else cash_profit):,} сом")
+        col_c1.metric("Сумма продаж (Нал)", f"{int(cash_turnover):,} сом")
         col_c2.metric("Чистая прибыль (Нал)", f"{int(cash_profit):,} сом")
         
+        # Строка 2: Продажи в рассрочку
         st.markdown("#### 🔵 Продажи в рассрочку (Прогноз)")
         col_r1, col_r2 = st.columns(2)
-        col_r1.metric("Общая сумма чеков рассрочки", f"{int(credit_turnover if 'credit_turnover' in locals() else credit_profit):,} сом")
+        col_r1.metric("Общая сумма чеков рассрочки", f"{int(credit_turnover):,} сом")
         col_r2.metric("Ожидаемая прибыль (+наценка 3%/мес)", f"{int(credit_profit):,} сом")
         
-        st.markdown("#### #### 🏛️ Итоговые показатели по магазину")
+        # Строка 3: Суммарные итоги
+        st.markdown("#### 🏛 vote; Итоговые показатели по магазину")
         col_t1, col_t2 = st.columns(2)
-        col_t1.metric("🔥 Общий оборот продаж", f"{int(total_sales_cash + credit_turnover if 'credit_turnover' in locals() else total_revenue):,} сом")
-        col_t2.metric("📈 Суммарная чистая прибыль", f"{int(total_profit_combined):,} сом")
+        col_t1.metric("🔥 Общий оборот продаж", f"{int(total_turnover):,} сом")
+        col_t2.metric("📈 Суммарная чистая прибыль (Ожидаемая)", f"{int(total_profit_combined):,} сом")
 
         st.markdown("---")
         st.subheader("📋 Детализация списка продаж")
@@ -119,6 +137,7 @@ def show_reports_page():
             report_display = []
             for _, row in filtered_df.iterrows():
                 fixed_name = fix_contract_name_on_fly(row['name'], row['date'])
+                
                 if row['payment'] == 'Рассрочка':
                     row_profit = (int(row.get('down_payment', 0) or 0) + int(row.get('credit_balance', 0) or 0)) - int(row['total_cost'])
                 else:
@@ -139,9 +158,25 @@ def show_reports_page():
                 })
             
             df_display = pd.DataFrame(report_display)
-            st.dataframe(df_display.drop(columns=["sale_id", "raw_payment"]), use_container_width=True, hide_index=True)
+            st.dataframe(
+                df_display.drop(columns=["sale_id", "raw_payment"]), 
+                use_container_width=True, 
+                hide_index=True
+            )
             
-            # БЛОК УМНОЙ ОТМЕНЫ С ЗАЩИТОЙ РОЛЕЙ
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                df_display.drop(columns=["sale_id", "raw_payment"]).to_excel(writer, index=False, sheet_name='Отчет по продажам')
+            
+            st.download_button(
+                label="📥 Скачать данный отчет в Excel",
+                data=buffer.getvalue(),
+                file_name=f"Отчет_Сулайман_Тоо_{start_date}_to_{end_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+            
+            # БЛОК УМНОЙ ОТМЕНЫ
             st.markdown("---")
             st.subheader("⚙️ Управление и отмена продаж")
             
@@ -153,31 +188,71 @@ def show_reports_page():
                 
                 if selected_to_cancel != "-- Не выбрано --":
                     s_del = cancel_options[selected_to_cancel]
+                    
                     if st.button("🚨 Подтвердить и БЕЗВОЗВРАТНО УДАЛИТЬ продажу", type="primary", use_container_width=True):
-                        try:
-                            if s_del["raw_payment"] == "Наличные":
-                                match = re.search(r"\(приход\s+([\d\.-]+)\)", s_del["Наименование договора / Товара"])
-                                if match:
-                                    b_date_raw = match.group(1)
-                                    b_date = datetime.strptime(b_date_raw, "%d.%m.%Y").date().strftime("%Y-%m-%d") if "." in b_date_raw else b_date_raw
-                                    p_name = str(s_del["Наименование договора / Товара"]).split(" (приход")[0].strip().lower()
-                                    batch_res = supabase.table("products").select("id", "qty").eq("name", p_name).eq("date", b_date).execute()
-                                    if batch_res.data:
-                                        supabase.table("products").update({"qty": int(batch_res.data[0]["qty"]) + int(s_del["Кол-во"])}).eq("id", batch_res.data[0]["id"]).execute()
+                        with st.spinner("⏳ Выполняется разбор продажи и возврат товаров на склад..."):
+                            try:
+                                if s_del["raw_payment"] == "Наличные":
+                                    match = re.search(r"\(приход\s+([\d\.-]+)\)", s_del["Наименование договора / Товара"])
+                                    if match:
+                                        b_date_raw = match.group(1)
+                                        if "." in b_date_raw:
+                                            b_date = datetime.strptime(b_date_raw, "%d.%m.%Y").date().strftime("%Y-%m-%d")
+                                        else:
+                                            b_date = b_date_raw
+                                            
+                                        p_name = str(s_del["Наименование договора / Товара"]).split(" (приход")[0].strip().lower()
+                                        
+                                        batch_res = supabase.table("products").select("id", "qty").eq("name", p_name).eq("date", b_date).execute()
+                                        if batch_res.data:
+                                            old_qty = int(batch_res.data[0]["qty"])
+                                            new_qty = old_qty + int(s_del["Кол-во"])
+                                            supabase.table("products").update({"qty": new_qty}).eq("id", batch_res.data[0]["id"]).execute()
                                     
-                            elif s_del["raw_payment"] == "Рассрочка":
-                                match_items = re.search(r"\[(.*?)\]", s_del["Наименование договора / Товара"])
-                                if match_items:
-                                    for part in match_items.group(1).split(", "):
-                                        item_match = re.search(r"(.*)\s+\((\d+)\s+шт\.\)", part)
-                                        if item_match:
-                                            p_name = item_match.group(1).strip().lower()
-                                            b_res = supabase.table("products").select("id", "qty").eq("name", p_name).gt("qty", 0).order("date", desc=True).execute()
-                                            if b_res.data:
-                                                supabase.table("products").update({"qty": int(b_res.data[0]["qty"]) + int(item_match.group(2))}).eq("id", b_res.data[0]["id"]).execute()
+                                elif s_del["raw_payment"] == "Рассрочка":
+                                    match_items = re.search(r"\[(.*?)\]", s_del["Наименование договора / Товара"])
+                                    if match_items:
+                                        items_str = match_items.group(1)
+                                        parts = items_str.split(", ")
+                                        for part in parts:
+                                            item_match = re.search(r"(.*)\s+\((\d+)\s+шт\.\)", part)
+                                            if item_match:
+                                                p_name = item_match.group(1).strip().lower()
+                                                return_qty = int(item_match.group(2))
+                                                
+                                                b_res = supabase.table("products").select("id", "qty").eq("name", p_name).gt("qty", 0).order("date", desc=True).execute()
+                                                if b_res.data:
+                                                    new_qty = int(b_res.data[0]["qty"]) + return_qty
+                                                    supabase.table("products").update({"qty": new_qty}).eq("id", b_res.data[0]["id"]).execute()
                                 
-                            supabase.table("sales").delete().eq("id", s_del["sale_id"]).execute()
-                            supabase.table("credit_payments").delete().eq("sale_id", s_del["sale_id"]).execute()
-                            st.success("🎉 Операция успешно отменена!")
-                            st.rerun()
-                        except Exception as e: st.error(f"Ошибка при удалении продажи: {e}")
+                                supabase.table("sales").delete().eq("id", s_del["sale_id"]).execute()
+                                supabase.table("credit_payments").delete().eq("sale_id", s_del["sale_id"]).execute()
+                                
+                                st.success("🎉 Операция успешно отменена!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Ошибка при удалении продажи: {e}")
+        else:
+            st.info("Нет данных за выбранный период")
+
+def show_supplier_page():
+    st.header("Выплаты поставщикам и контрагентам")
+    with st.form("supplier_payment"):
+        supplier = st.text_input("Название контрагента")
+        amount = st.number_input("Сумма выплаты", min_value=1.0, value=1000.0)
+        comment = st.text_input("Комментарий")
+        if st.form_submit_button("Зафиксировать выплату"):
+            if supplier:
+                now_formatted = datetime.now().strftime("%d.%m.%Y %H:%M")
+                supabase.table("supplier_payments").insert({
+                    "date": now_formatted, "supplier": supplier.strip(), "amount": amount, "comment": comment
+                }).execute()
+                st.success("Выплата отправлена!")
+                st.rerun()
+
+    payments_res = supabase.table("supplier_payments").select("*").order("id", desc=True).execute()
+    if payments_res.data:
+        df_pay = pd.DataFrame(payments_res.data).drop(columns=["id", "created_at"], errors="ignore")
+        df_pay["date"] = df_pay["date"].apply(lambda x: format_any_date(x, include_time=True))
+        df_pay = df_pay.rename(columns={"date": "Дата выплаты", "supplier": "Контрагент", "amount": "Сумма (сом)", "comment": "Комментарий"})
+        st.dataframe(df_pay[["Дата выплаты", "Контрагент", "Сумма (сом)", "Комментарий"]], use_container_width=True, hide_index=True)
