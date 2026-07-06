@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Отчеты и Аналитика
-# Версия программы: 1.4.2 (Полное исправление NameError с первоначальными взносами)
+# Версия программы: 1.4.3 (ФИНАЛЬНОЕ ИСПРАВЛЕНИЕ: Полное удаление переменной cash_turnover)
 
 import streamlit as st
 import pandas as pd
@@ -69,7 +69,6 @@ def show_reports_page():
         
         # 1. Наличные (Прямые продажи)
         df_cash = filtered_df[filtered_df['payment'] == 'Наличные']
-        cash_turnover = df_cash['total_sale'].sum()
         cash_profit = df_cash['profit'].sum()
         
         # 2. Рассрочка (Ожидаемый доход при 100% выплате всех клиентов)
@@ -99,23 +98,25 @@ def show_reports_page():
                         total_credit_collected += float(op["amount"])
                 except: continue
 
-        # Финансовые итоги
-        total_revenue = cash_turnover + total_down_payments + total_credit_collected
-        total_turnover = cash_turnover + credit_turnover
+        # Итоговый оборот продаж по чекам (Сумма наличных + Сумма рассрочек)
+        total_turnover = df_cash['total_sale'].sum() + credit_turnover
         total_profit_combined = cash_profit + credit_profit
 
         st.markdown("---")
         
+        # Строка 1: Прямые наличные продажи
         st.markdown("#### 🟢 Прямые продажи (Наличные)")
         col_c1, col_c2 = st.columns(2)
-        col_c1.metric("Сумма продаж (Нал)", f"{int(cash_turnover):,} сом")
+        col_c1.metric("Сумма продаж (Нал)", f"{int(df_cash['total_sale'].sum()):,} сом")
         col_c2.metric("Чистая прибыль (Нал)", f"{int(cash_profit):,} сом")
         
+        # Строка 2: Продажи в рассрочку
         st.markdown("#### 🔵 Продажи в рассрочку (Прогноз)")
         col_r1, col_r2 = st.columns(2)
         col_r1.metric("Общая сумма чеков рассрочки", f"{int(credit_turnover):,} сом")
         col_r2.metric("Ожидаемая прибыль (+наценка 3%/мес)", f"{int(credit_profit):,} сом")
         
+        # Строка 3: Суммарные итоги
         st.markdown("#### 🏛️ Итоговые показатели по магазину")
         col_t1, col_t2 = st.columns(2)
         col_t1.metric("🔥 Общий оборот продаж", f"{int(total_turnover):,} сом")
