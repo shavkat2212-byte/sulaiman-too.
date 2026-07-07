@@ -1,9 +1,7 @@
-# Магазин «Сулайман-Тоо» — Главный модуль: Авторизация с сохранением сессии (Cookies)
-# Версия программы: 1.6.0
+# Магазин «Сулайман-Тоо» — Главный модуль: Авторизация и Маршрутизация
+# Версия программы: 1.6.1 (Откат к стабильной сессии без внешних зависимостей)
 
 import streamlit as st
-import extra_streamlit_components as stx
-from datetime import datetime, timedelta
 from database import authenticate_user, create_new_user, check_has_users
 
 # Импорты модулей
@@ -21,32 +19,12 @@ st.set_page_config(page_title="Магазин «Сулайман-Тоо»", page
 if "cart" not in st.session_state:
     st.session_state.cart = []
 
-# --- НАСТРОЙКА КУКИ (ЗАПОМИНАНИЕ ПОЛЬЗОВАТЕЛЯ) ---
-@st.cache_resource
-def get_cookie_manager():
-    return stx.CookieManager()
-
-cookie_manager = get_cookie_manager()
-
-# Если сессия в st.session_state пустая, пробуем восстановить её из куки браузера
-if "user" not in st.session_state or st.session_state.user is None:
-    saved_username = cookie_manager.get(cookie="st_username")
-    saved_role = cookie_manager.get(cookie="st_role")
-    saved_uid = cookie_manager.get(cookie="st_uid")
-    
-    if saved_username and saved_role:
-        st.session_state.user = {
-            "id": saved_uid,
-            "username": saved_username,
-            "role": saved_role
-        }
-    else:
-        st.session_state.user = None
-
-current_user = st.session_state.user
+# Инициализация состояния авторизации (встроенная память Streamlit)
+if "user" not in st.session_state:
+    st.session_state.user = None
 
 # --- Окно авторизации ---
-if current_user is None:
+if st.session_state.user is None:
     st.title("🛍️ Автоматизированная система «Сулайман-Тоо»")
     
     if not check_has_users():
@@ -69,44 +47,33 @@ if current_user is None:
     with st.form("login_form"):
         username_input = st.text_input("Имя пользователя (Логин)")
         password_input = st.text_input("Пароль", type="password")
-        remember_me = st.checkbox("Запомнить меня на этом устройстве (30 дней)", value=True)
         submit_login = st.form_submit_button("Войти")
         
         if submit_login:
             user_data = authenticate_user(username_input, password_input)
             if user_data:
                 st.session_state.user = user_data
-                
-                # Если галочка "Запомнить" стоит, пишем данные в куки браузера на 30 дней
-                if remember_me:
-                    expires_at = datetime.now() + timedelta(days=30)
-                    cookie_manager.set("st_username", user_data["username"], expires_at=expires_at)
-                    cookie_manager.set("st_role", user_data["role"], expires_at=expires_at)
-                    cookie_manager.set("st_uid", str(user_data["id"]), expires_at=expires_at)
-                
                 st.success(f"Добро пожаловать, {user_data['username']}!")
                 st.rerun()
             else:
                 st.error("❌ Неверный логин или пароль")
     st.stop()
 
-# --- Раздел авторизованного пользователя ---
+# --- Раздел, если пользователь уже авторизован ---
+current_user = st.session_state.user
 user_role = current_user["role"]
 
 st.sidebar.markdown(f"### 👤 {current_user['username']}")
 st.sidebar.info(f"Роль: **{user_role}**")
 
 if st.sidebar.button("🚪 Выйти из аккаунта", use_container_width=True):
-    # При выходе полностью очищаем и куки, и сессию
-    cookie_manager.delete("st_username")
-    cookie_manager.delete("st_role")
-    cookie_manager.delete("st_uid")
     st.session_state.user = None
     st.rerun()
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🛠️ Главное меню")
 
+# Все пункты меню доступны обоим, ограничения настроены внутри модулей
 menu_options = ["📦 Склад", "🛒 Продажи", "👥 Клиенты", "💵 Касса", "📊 Отчеты"]
 choice = st.sidebar.radio("Перейти в раздел:", menu_options)
 
@@ -128,7 +95,7 @@ if user_role == "Администратор":
                     st.error("Заполните поля")
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Магазин «Сулайман-Тоо» v1.6.0")
+st.sidebar.caption("Магазин «Сулайман-Тоо» v1.6.1")
 
 # Роутинг страниц
 if choice == "📦 Склад":
