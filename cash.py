@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Состояние кассы
-# Версия программы: 1.8.5 (Полное исправление KeyError 'id', таблицы приходов/расходов, итоги за период)
+# Версия программы: 1.8.6 (Полная зачистка KeyError, раздельные таблицы приходов/расходов, итоги за период)
 
 import streamlit as st
 import pandas as pd
@@ -113,7 +113,7 @@ def show_cash_page():
             if start_date <= d_obj <= end_date:
                 client_name = clients_dict.get(p.get("client_id"), "Клиент")
                 income_records.append({
-                    "Дата": p_date, "Сумma (сом)": int(p_amt), "Комментарий / Причина": f"Погашение рассрочки от {client_name}"
+                    "Дата": p_date, "Сумма (сом)": int(p_amt), "Комментарий / Причина": f"Погашение рассрочки от {client_name}"
                 })
 
     # 4. Из supplier_payments (Выплаты поставщикам)
