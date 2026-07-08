@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Состояние кассы
-# Версия программы: 1.8.0 (Две раздельные таблицы: Приходы и Расходы, Итоги внизу, Удаление операций)
+# Версия программы: 1.8.5 (Полное исправление KeyError 'id', таблицы приходов/расходов, итоги за период)
 
 import streamlit as st
 import pandas as pd
@@ -20,18 +20,18 @@ def show_cash_page():
     clients_raw = supabase.table("clients").select("id, fio").execute()
     clients_dict = {c["id"]: c["fio"] for c in clients_raw.data} if clients_raw.data else {}
 
-    # --- МАТЕМАТИКА ВЕРХНИХ КАРТОЧЕК (ТВОЯ ЛЮБИМАЯ СТАБИЛЬНАЯ СХЕМА) ---
+    # --- МАТЕМАТИКА ВЕРХНИХ КАРТОЧЕК ---
     full_cash_sales = sum(s["total_sale"] for s in sales_res.data if s.get("payment") == "Наличные")
     credit_debts = sum(float(s.get("credit_balance", 0.0)) for s in sales_res.data if s.get("payment") == "Рассрочка")
     total_credit_collected = sum(float(p["amount_paid"] or 0) for p in payments_res.data)
     
-    # Весь ручной поток (включая взносы, инкассации и расходы)
-    manual_cash_flow = sum(float(op['amount'] or 0) for op in ops_res.data)
+    # Весь ручной поток кассы
+    manual_cash_flow = sum(float(op.get('amount') or 0) for op in ops_res.data)
     
-    # Фактические выплаты поставщикам (минусуем из кассы)
+    # Выплаты поставщикам
     total_suppliers_paid = sum(float(sup.get('amount') or 0) for sup in suppliers_res.data)
     
-    # ИСПРАВЛЕННАЯ ИТОГОВАЯ ФОРМУЛА НАЛИЧНЫХ (Без удваивания взносов!)
+    # Чистый остаток (Без удваивания взносов!)
     current_cash_in_hand = full_cash_sales + manual_cash_flow - total_suppliers_paid
     
     # Вывод верхних карточек
@@ -71,11 +71,11 @@ def show_cash_page():
     else:
         start_date, end_date = today_date, today_date
 
-    # --- СБОР ВСЕХ ДАННЫХ ДЛЯ ДВУХ ТАБЛИЦ ---
+    # --- СБОР ДАННЫХ ДЛЯ ДВУХ ТАБЛИЦ ---
     income_records = []  # Приходы
     expense_records = [] # Расходы
 
-    # 1. Сбор из продаж (Прямой Нал)
+    # 1. Прямой Нал из продаж
     for s in sales_res.data:
         if s.get("payment") == "Наличные" and s.get("day"):
             try: d_obj = datetime.strptime(s["day"], "%Y-%m-%d").date()
@@ -86,7 +86,7 @@ def show_cash_page():
                     "Дата": s["day"], "Сумма (сом)": int(s["total_sale"]), "Комментарий / Причина": "Прямая наличная продажа"
                 })
 
-    # 2. Сбор из cash_operations (Ручные приходы, взносы и расходы)
+    # 2. Из cash_operations (Ручные приходы, взносы и расходы)
     for op in ops_res.data:
         op_date = str(op.get('date') or "")
         try: d_obj = datetime.strptime(op_date[:10], "%Y-%m-%d").date()
@@ -95,14 +95,14 @@ def show_cash_page():
             except: d_obj = today_date
             
         if start_date <= d_obj <= end_date:
-            amt = float(op['amount'] or 0)
-            item = {"id": op['id'], "Дата": op_date, "Сумма (сом)": int(abs(amt)), "Комментарий / Причина": op.get('comment') or "-"}
+            amt = float(op.get('amount') or 0)
+            item = {"Дата": op_date, "Сумма (сом)": int(abs(amt)), "Комментарий / Причина": op.get('comment') or "-"}
             if amt > 0:
                 income_records.append(item)
             else:
                 expense_records.append(item)
 
-    # 3. Сбор из credit_payments (Оплаты долей клиентов)
+    # 3. Из credit_payments (Оплаты долей клиентов)
     for p in payments_res.data:
         p_amt = float(p.get("amount_paid") or 0)
         p_date = p.get("payment_date") or ""
@@ -113,10 +113,10 @@ def show_cash_page():
             if start_date <= d_obj <= end_date:
                 client_name = clients_dict.get(p.get("client_id"), "Клиент")
                 income_records.append({
-                    "Дата": p_date, "Сумма (сом)": int(p_amt), "Комментарий / Причина": f"Погашение рассрочки от {client_name}"
+                    "Дата": p_date, "Сумma (сом)": int(p_amt), "Комментарий / Причина": f"Погашение рассрочки от {client_name}"
                 })
 
-    # 4. Сбор из supplier_payments (Выплаты поставщикам)
+    # 4. Из supplier_payments (Выплаты поставщикам)
     for sup in suppliers_res.data:
         sup_date = sup.get("date") or ""
         try: d_obj = datetime.strptime(sup_date[:10], "%d.%m.%Y").date()
@@ -124,60 +124,56 @@ def show_cash_page():
         
         if start_date <= d_obj <= end_date:
             expense_records.append({
-                "Дата": sup_date, "Сумма (сом)": int(float(sup['amount'] or 0)), 
+                "Дата": sup_date, "Сумма (сом)": int(float(sup.get('amount') or 0)), 
                 "Комментарий / Причина": f"Выплата поставщику {sup.get('supplier')}: {sup.get('comment', '')}"
             })
 
-    # --- ОТОБРАЖЕНИЕ ТАБЛИЦЫ 1: ПРИХОДЫ ---
+    # --- ТАБЛИЦА 1: ПРИХОДЫ ---
     st.subheader("🟢 История кассовых приходов")
     if income_records:
         df_inc = pd.DataFrame(income_records)
-        df_inc_display = df_inc.drop(columns=["id"], errors="ignore")
-        st.dataframe(df_inc_display, use_container_width=True, hide_index=True)
-        
-        # СТРОКА ИТОГО В НИЗУ ТАБЛИЦЫ 1
-        total_inc = df_inc["Сумма (сом)"].sum()
-        st.markdown(f"**💰 ИТОГО ПРИХОДОВ ЗА ПЕРИОД: `{total_inc:,}` сом**")
+        st.dataframe(df_inc, use_container_width=True, hide_index=True)
+        st.markdown(f"**💰 ИТОГО ПРИХОДОВ ЗА ПЕРИОД: `{df_inc['Сумма (сом)'].sum():,}` сом**")
     else:
         st.write("Приходов за этот период не найдено.")
 
     st.markdown("---")
 
-    # --- ОТОБРАЖЕНИЕ ТАБЛИЦЫ 2: РАСХОДЫ ---
+    # --- ТАБЛИЦА 2: РАСХОДЫ ---
     st.subheader("🔴 История расходов из кассы")
     if expense_records:
         df_exp = pd.DataFrame(expense_records)
-        df_exp_display = df_exp.drop(columns=["id"], errors="ignore")
-        st.dataframe(df_exp_display, use_container_width=True, hide_index=True)
-        
-        # СТРОКА ИТОГО В НИЗУ ТАБЛИЦЫ 2
-        total_exp = df_exp["Сумма (сом)"].sum()
-        st.markdown(f"**💸 ИТОГО РАСХОДОВ ЗА ПЕРИОД: `{total_exp:,}` сом**")
+        st.dataframe(df_exp, use_container_width=True, hide_index=True)
+        st.markdown(f"**💸 ИТОГО РАСХОДОВ ЗА ПЕРИОД: `{df_exp['Сумма (сом)'].sum():,}` сом**")
     else:
         st.write("Расходов за этот период не найдено.")
 
-    # --- БЛОК РЕДАКТИРОВАНИЯ / УДАЛЕНИЯ ОПЕРАЦИЙ ---
+    # --- БЛОК БЕЗОПАСНОГО УДАЛЕНИЯ ОПЕРАЦИЙ (БЕЗ ИСПОЛЬЗОВАНИЯ ID) ---
     st.markdown("---")
     st.subheader("⚙️ Редактирование кассы (Удаление записей)")
     
-    # Собираем только ручные операции из базы, у которых есть ID, чтобы их можно было удалить
-    all_manual_ops = [op for op in ops_res.data]
-    if all_manual_ops:
+    if ops_res.data:
         delete_options = {}
-        for op in all_manual_ops:
-            amt = float(op['amount'])
-            sign = "➕ Приход" if amt > 0 else "➖ Расход"
-            label = f"{op['date']} | {sign} {int(abs(amt))} сом | Причина: {op['comment']}"
-            delete_options[label] = op['id']
+        for op in ops_res.data:
+            op_date = op.get("date")
+            op_comment = op.get("comment") or ""
+            amt = float(op.get('amount') or 0)
+            sign = "Приход" if amt > 0 else "Расход"
             
-        selected_op_label = st.selectbox("🚨 Выберите ошибочную ручную операцию для полного удаления:", ["-- Не выбрано --"] + list(delete_options.keys()))
+            # Строим уникальный текстовый ключ для селектбокса
+            label = f"{op_date} | {sign} {int(abs(amt))} сом | Описание: {op_comment}"
+            # Сохраняем связку даты и комментария для точечного удаления
+            delete_options[label] = {"date": op_date, "comment": op_comment}
+            
+        selected_op_label = st.selectbox("🚨 Выберите ошибочную ручную операцию для удаления:", ["-- Не выбрано --"] + list(delete_options.keys()))
         
         if selected_op_label != "-- Не выбрано --":
-            target_id = delete_options[selected_op_label]
+            target = delete_options[selected_op_label]
             if st.button("❌ Безвозвратно удалить эту операцию из истории", type="primary", use_container_width=True):
                 try:
-                    supabase.table("cash_operations").delete().eq("id", target_id).execute()
-                    st.success("🎉 Запись успешно удалена из кассы! Баланс пересчитан.")
+                    # Удаляем точечно по совпадению даты и комментария
+                    supabase.table("cash_operations").delete().eq("date", target["date"]).eq("comment", target["comment"]).execute()
+                    st.success("🎉 Запись успешно удалена! Баланс пересчитан.")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Ошибка удаления: {e}")
