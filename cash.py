@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Состояние кассы магазина
-# Версия программы: 1.7.7 (Абсолютная защита от NoneType в комментариях и датах)
+# Версия программы: 1.7.8 (Полное исправление ошибки NoneType в credit_payments)
 
 import streamlit as st
 import pandas as pd
@@ -14,7 +14,7 @@ def show_cash_page():
     else:
         st.header("💵 Оперативная касса (Панель Кассира)")
 
-    # 1. Загрузка данных из БД
+    # 1. Загрузка данных из БД (Чистые запросы без связок таблиц)
     sales_res = supabase.table("sales").select("total_sale, payment, down_payment, day, profit").execute()
     ops_res = supabase.table("cash_operations").select("*").order("date", desc=True).execute()
     payments_res = supabase.table("credit_payments").select("amount_paid, payment_date, client_id").execute()
@@ -37,14 +37,12 @@ def show_cash_page():
     today_str = datetime.now().strftime("%Y-%m-%d")
     today_str_dot = datetime.now().strftime("%d.%m.%Y")
 
-    # Безопасный расчет за сегодня
     today_cash_sales = sum(
         int(s["total_sale"] or 0) 
         for s in sales_res.data 
         if s.get("payment") == "Наличные" and s.get("day") and str(s.get("day")) == today_str
     )
     
-    # Защищенная фильтрация сегодняшних операций по кассе
     today_ops = []
     for op in ops_res.data:
         op_date = op.get("date")
@@ -53,7 +51,6 @@ def show_cash_page():
             if op_date_str.startswith(today_str) or op_date_str.startswith(today_str_dot):
                 today_ops.append(op)
     
-    # Безопасный подсчет сумм за сегодня с защитой от None в комментариях
     today_down_payments = 0.0
     today_manual_in = 0.0
     today_expenses = 0.0
