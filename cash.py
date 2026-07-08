@@ -1,14 +1,10 @@
 # Магазин «Сулайман-Тоо» — Модуль: Состояние кассы магазина
-# Версия программы: 1.7.6 (Полная защита от пустых значений дат NoneType)
+# Версия программы: 1.7.7 (Абсолютная защита от NoneType в комментариях и датах)
 
 import streamlit as st
 import pandas as pd
 from datetime import datetime
 from database import supabase
-
-def format_date_display(date_str):
-    if not date_str: return "-"
-    return str(date_str)[:16]
 
 def show_cash_page():
     user_role = st.session_state.get("user", {}).get("role", "Кассир")
@@ -31,9 +27,9 @@ def show_cash_page():
 
     # --- ТОЧНЫЙ ОСТАТОК НАЛИЧНЫХ «ЗДЕСЬ И СЕЙЧАС» ---
     all_cash_sales = sum(int(s["total_sale"] or 0) for s in sales_res.data if s.get("payment") == "Наличные")
-    all_manual_and_downpayments = sum(float(op['amount'] or 0) for op in ops_res.data)
+    all_manual_and_downpayments = sum(float(op.get('amount') or 0) for op in ops_res.data)
     all_collected_credits = sum(float(p.get("amount_paid", 0.0) or 0) for p in payments_res.data)
-    all_supplier_flow = sum(float(sup['amount'] or 0) for sup in suppliers_res.data)
+    all_supplier_flow = sum(float(sup.get('amount') or 0) for sup in suppliers_res.data)
 
     net_cash_in_hand = all_cash_sales + all_manual_and_downpayments + all_collected_credits - all_supplier_flow
 
@@ -41,23 +37,39 @@ def show_cash_page():
     today_str = datetime.now().strftime("%Y-%m-%d")
     today_str_dot = datetime.now().strftime("%d.%m.%Y")
 
-    # Безопасный расчет за сегодня (проверяем, что день s.get("day") существует)
+    # Безопасный расчет за сегодня
     today_cash_sales = sum(
         int(s["total_sale"] or 0) 
         for s in sales_res.data 
         if s.get("payment") == "Наличные" and s.get("day") and str(s.get("day")) == today_str
     )
     
-    today_ops = [
-        op for op in ops_res.data 
-        if op.get("date") and (str(op.get("date")).startswith(today_str) or str(op.get("date")).startswith(today_str_dot))
-    ]
+    # Защищенная фильтрация сегодняшних операций по кассе
+    today_ops = []
+    for op in ops_res.data:
+        op_date = op.get("date")
+        if op_date:
+            op_date_str = str(op_date)
+            if op_date_str.startswith(today_str) or op_date_str.startswith(today_str_dot):
+                today_ops.append(op)
     
-    today_down_payments = sum(float(op['amount'] or 0) for op in today_ops if "Перв. взнос" in str(op.get("comment", "")))
-    today_manual_in = sum(float(op['amount'] or 0) for op in today_ops if float(op['amount'] or 0) > 0 and "Перв. взнос" not in str(op.get("comment", "")))
-    today_expenses = sum(abs(float(op['amount'] or 0)) for op in today_ops if float(op['amount'] or 0) < 0)
+    # Безопасный подсчет сумм за сегодня с защитой от None в комментариях
+    today_down_payments = 0.0
+    today_manual_in = 0.0
+    today_expenses = 0.0
 
-    # ВЫВОД МЕТРИК
+    for op in today_ops:
+        amt = float(op.get('amount') or 0)
+        comment_str = str(op.get("comment") or "").strip()
+        
+        if "Перв. взнос" in comment_str:
+            today_down_payments += amt
+        elif amt > 0:
+            today_manual_in += amt
+        elif amt < 0:
+            today_expenses += abs(amt)
+
+    # ВЫВОД МЕТРИК НА ЭКРАН
     st.markdown("---")
     c1, c2 = st.columns(2)
     c1.metric("💰 Фактический остаток наличных в кассе", f"{int(net_cash_in_hand):,} сом")
@@ -68,7 +80,7 @@ def show_cash_page():
     else:
         c2.metric("🛍️ Дневная выручка от продаж", f"{int(today_cash_sales + today_down_payments):,} сом")
 
-    # СВОДКА ЗА ДЕНЬ
+    # СВОДКА ЗА ДЕНЬ ДЛЯ КАССИРА
     st.markdown("---")
     st.subheader("📋 Движение наличных за сегодняшний день")
     col_day1, col_day2, col_day3, col_day4 = st.columns(4)
@@ -97,7 +109,7 @@ def show_cash_page():
 
     # 2. Ручные кассовые операции
     for op in ops_res.data:
-        amt = float(op['amount'] or 0)
+        amt = float(op.get('amount') or 0)
         op_date = str(op.get('date') or today_str)
         try: d_obj = datetime.strptime(op_date[:10], "%Y-%m-%d").date()
         except:
@@ -109,7 +121,7 @@ def show_cash_page():
             "Дата": op_date,
             "Тип операции": "🟢 ПРИХОД (Касса)" if amt > 0 else "🔴 РАСХОД (Касса)",
             "Сумма (сом)": int(abs(amt)),
-            "Описание/Комментарий": op.get('comment', '-')
+            "Описание/Комментарий": op.get('comment') or "-"
         })
 
     # 3. Принятые платежи по рассрочке
@@ -139,8 +151,8 @@ def show_cash_page():
             "date_obj": d_obj,
             "Дата": sup_date_str,
             "Тип операции": "🔴 РАСХОД (Поставщику)",
-            "Сумма (сом)": int(float(sup.get('amount', 0))),
-            "Описание/Комментарий": f"Выплата контрагенту {sup.get('supplier', '-')}: {sup.get('comment', '')}"
+            "Сумма (сом)": int(float(sup.get('amount') or 0)),
+            "Описание/Комментарий": f"Выплата контрагенту {sup.get('supplier') or '-'}: {sup.get('comment') or ''}"
         })
 
     # Вывод таблицы с фильтром периодов
@@ -186,5 +198,5 @@ def show_cash_page():
                     "amount": actual, 
                     "comment": comment or op_type
                 }).execute()
-                st.success("🎉 Операция успешно проведена!")
+                st.success("🎉 Очередная кассовая операция успешно проведена!")
                 st.rerun()
