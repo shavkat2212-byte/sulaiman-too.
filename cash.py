@@ -1,67 +1,52 @@
+# Магазин «Сулайман-Тоо» — Модуль: Состояние кассы магазина
+# Версия программы: 1.7.5 (Полный кассовый отчет со всеми приходами/расходами и фильтром дат)
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime
 from database import supabase
 
-def format_time_on_screen(date_str):
-    """Красивое отображение даты/времени"""
+def format_date_display(date_str):
     if not date_str: return "-"
-    return str(date_str).replace(".2026", ".26")
+    return str(date_str)[:16]
 
 def show_cash_page():
-    # Проверка роли пользователя
-    current_user = st.session_state.get("user", {})
-    user_role = current_user.get("role", "Кассир")
+    user_role = st.session_state.get("user", {}).get("role", "Кассир")
     
     if user_role == "Администратор":
-        st.header("💵 Управление кассой (Панель Администратора)")
+        st.header("💵 Управление кассой и полный финансовый отчет")
     else:
         st.header("💵 Оперативная касса (Панель Кассира)")
 
-    # 1. Загрузка данных из БД за всё время
+    # 1. Загрузка абсолютно всех источников для вычисления баланса «Здесь и сейчас»
     sales_res = supabase.table("sales").select("total_sale, payment, down_payment, day, profit").execute()
     ops_res = supabase.table("cash_operations").select("*").order("date", desc=True).execute()
-    
-    # Чтобы не падало из-за структуры, берем только существующую колонку amount_paid
-    payments_res = supabase.table("credit_payments").select("amount_paid").execute()
-    
-    # Загружаем выплаты поставщикам, если таблица существует
-    try: suppliers_res = supabase.table("supplier_payments").select("amount").execute()
+    payments_res = supabase.table("credit_payments").select("amount_paid, payment_date, client_id, sales(name)").execute()
+    try: suppliers_res = supabase.table("supplier_payments").select("*").execute()
     except: suppliers_res = type('obj', (object,), {'data': []})
 
-    # --- МАТЕМАТИКА 1: ТОЧНЫЙ ОСТАТОК НАЛИЧНЫХ «ЗДЕСЬ И СЕЙЧАС» ---
-    # Прямые наличные продажи
+    # Сбор данных по клиентам для красивых имен в отчете
+    clients_raw = supabase.table("clients").select("id, fio").execute()
+    clients_dict = {c["id"]: c["fio"] for c in clients_raw.data} if clients_raw.data else {}
+
+    # --- ТОЧНЫЙ ОСТАТОК НАЛИЧНЫХ ---
     all_cash_sales = sum(s["total_sale"] for s in sales_res.data if s.get("payment") == "Наличные")
-    
-    # Так как при рассрочке первоначальный взнос дублируется в cash_operations в sales.py,
-    # мы НЕ плюсуем сюда s["down_payment"], иначе сумма удваивается. 
-    # Все взносы и ручные расходы идеально считываются напрямую из cash_operations!
     all_manual_and_downpayments = sum(float(op['amount']) for op in ops_res.data)
-    
-    # Фактически принятые оплаты долей по рассрочкам из календаря платежей
     all_collected_credits = sum(float(p.get("amount_paid", 0.0) or 0) for p in payments_res.data)
-    
-    # Выплаты поставщикам
     all_supplier_flow = sum(float(sup['amount']) for sup in suppliers_res.data)
 
-    # Итоговый чистый баланс в кассе
     net_cash_in_hand = all_cash_sales + all_manual_and_downpayments + all_collected_credits - all_supplier_flow
 
-    # --- МАТЕМАТИКА 2: ОПЕРАТИВНЫЕ ИТОГИ СТРОГО ЗА СЕГОДНЯ ---
-    today_str_dash = datetime.now().strftime("%Y-%m-%d")
+    # --- ПОКАЗАТЕЛИ СТРОГО ЗА СЕГОДНЯ ---
+    today_str = datetime.now().strftime("%Y-%m-%d")
     today_str_dot = datetime.now().strftime("%d.%m.%Y")
 
-    # Прямые продажи за сегодня (Наличные)
-    today_cash_sales = sum(s["total_sale"] for s in sales_res.data if s.get("payment") == "Наличные" and str(s.get("day")) == today_str_dash)
-    
-    # Первоначальные взносы, внесенные СЕГОДНЯ (фильтруем по дате из cash_operations)
-    today_ops = [op for op in ops_res.data if str(op.get("date", "")).startswith(today_str_dash) or str(op.get("date", "")).startswith(today_str_dot)]
-    
+    today_cash_sales = sum(s["total_sale"] for s in sales_res.data if s.get("payment") == "Наличные" and str(s.get("day")) == today_str)
+    today_ops = [op for op in ops_res.data if str(op.get("date", "")).startswith(today_str) or str(op.get("date", "")).startswith(today_str_dot)]
     today_down_payments = sum(float(op['amount']) for op in today_ops if "Перв. взнос" in str(op.get("comment", "")))
     today_manual_in = sum(float(op['amount']) for op in today_ops if float(op['amount']) > 0 and "Перв. взнос" not in str(op.get("comment", "")))
     today_expenses = sum(abs(float(op['amount'])) for op in today_ops if float(op['amount']) < 0)
 
-    # ВЫВОД КЛЮЧЕВЫХ МЕТРИК
     st.markdown("---")
     c1, c2 = st.columns(2)
     c1.metric("💰 Фактический остаток наличных в кассе", f"{int(net_cash_in_hand):,} сом")
@@ -70,21 +55,108 @@ def show_cash_page():
         all_profit = sum(float(s.get('profit', 0.0) or 0) for s in sales_res.data)
         c2.metric("📈 Общая чистая прибыль бизнеса", f"{int(all_profit):,} сом")
     else:
-        # Для кассира выводим дневную выручку
-        today_revenue = today_cash_sales + today_down_payments
-        c2.metric("🛍️ Дневная выручка от продаж", f"{int(today_revenue):,} сом")
+        c2.metric("🛍️ Дневная выручка от продаж", f"{int(today_cash_sales + today_down_payments):,} сом")
 
-    # СЕКЦИЯ ДЛЯ КАССИРА: ЧТО ПРОИСХОДИЛО СЕГОДНЯ
+    # СВОДКА ЗА ДЕНЬ
     st.markdown("---")
     st.subheader("📋 Движение наличных за сегодняшний день")
-    
     col_day1, col_day2, col_day3, col_day4 = st.columns(4)
     col_day1.metric("🟢 Прямые продажи (Нал)", f"{int(today_cash_sales):,} сом")
     col_day2.metric("📥 Перв. взносы (Рассрочка)", f"{int(today_down_payments):,} сом")
     col_day3.metric("➕ Прочие приходы/Сдача", f"{int(today_manual_in):,} сом")
-    col_day4.metric("🔴 Выдачи / Расходы / Инкассация", f"{int(today_expenses):,} сом")
+    col_day4.metric("🔴 Выдачи / Расходы", f"{int(today_expenses):,} сом")
 
-    # ФОРМА ИЗЪЯТИЯ (Только для Администратора)
+    # --- ПОСТРОЕНИЕ ЕДИНОЙ ТАБЛИЦЫ ВСЕХ ДОХОДОВ И РАСХОДОВ ---
+    all_records = []
+
+    # 1. Прямые наличные продажи
+    for s in sales_res.data:
+        if s.get("payment") == "Наличные":
+            all_records.append({
+                "date_obj": datetime.strptime(s["day"], "%Y-%m-%d").date() if s["day"] else datetime.now().date(),
+                "Дата": s["day"],
+                "Тип операции": "🟢 ПРИХОД (Прямая продажа)",
+                "Сумма (сом)": int(s["total_sale"]),
+                "Описание/Комментарий": "Продажа товара за наличный расчет"
+            })
+
+    # 2. Ручные кассовые операции + Первоначальные взносы
+    for op in ops_res.data:
+        amt = float(op['amount'])
+        try: d_obj = datetime.strptime(str(op['date'])[:10], "%Y-%m-%d").date()
+        except: 
+            try: d_obj = datetime.strptime(str(op['date'])[:10], "%d.%m.%Y").date()
+            except: d_obj = datetime.now().date()
+            
+        all_records.append({
+            "date_obj": d_obj,
+            "Дата": str(op['date']),
+            "Тип операции": "🟢 ПРИХОД (Касса)" if amt > 0 else "🔴 РАСХОД (Касса)",
+            "Сумма (сом)": int(abs(amt)),
+            "Описание/Комментарий": op['comment']
+        })
+
+    # 3. Принятые платежи по рассрочке (доли клиентов)
+    for p in payments_res.data:
+        p_amt = float(p.get("amount_paid", 0.0) or 0)
+        if p_amt > 0:
+            p_date_str = p.get("payment_date") or today_str
+            try: d_obj = datetime.strptime(p_date_str[:10], "%d.%m.%Y").date()
+            except: d_obj = datetime.now().date()
+            
+            client_fio = clients_dict.get(p.get("client_id"), "Клиент")
+            all_records.append({
+                "date_obj": d_obj,
+                "Дата": p_date_str,
+                "Тип операции": "🟢 ПРИХОД (Взнос по рассрочке)",
+                "Сумма (сом)": int(p_amt),
+                "Описание/Комментарий": f"Оплата доли от {client_fio}"
+            })
+
+    # 4. Выплаты поставщикам
+    for sup in suppliers_res.data:
+        sup_date_str = sup.get("date") or today_str
+        try: d_obj = datetime.strptime(sup_date_str[:10], "%d.%m.%Y").date()
+        except: d_obj = datetime.now().date()
+            
+        all_records.append({
+            "date_obj": d_obj,
+            "Дата": sup_date_str,
+            "Тип операции": "🔴 РАСХОД (Поставщику)",
+            "Сумма (сом)": int(float(sup['amount'])),
+            "Описание/Комментарий": f"Выплата контрагенту {sup.get('supplier')}: {sup.get('comment', '')}"
+        })
+
+    df_all_cash = pd.DataFrame(all_records)
+
+    # ВЫВОД ФИЛЬТРА ПО ПЕРИОДАМ
+    st.markdown("---")
+    st.subheader("🔍 История и фильтрация кассового отчета")
+    
+    if not df_all_cash.empty:
+        if user_role == "Администратор":
+            # Администратор выбирает любой период
+            cash_range = st.date_input("Выберите период просмотра кассы", value=(df_all_cash['date_obj'].min(), df_all_cash['date_obj'].max()))
+            if isinstance(cash_range, tuple) and len(cash_range) == 2:
+                start_c, end_c = cash_range
+                filtered_cash_df = df_all_cash[(df_all_cash['date_obj'] >= start_c) & (df_all_cash['date_obj'] <= end_c)]
+            else:
+                filtered_cash_df = pd.DataFrame()
+        else:
+            # Кассир видит только сегодня
+            filtered_cash_df = df_all_cash[df_all_cash['date_obj'] == datetime.now().date()]
+            st.info("Кассиру доступен просмотр кассового отчета только за текущий день.")
+
+        if not filtered_cash_df.empty:
+            # Сортируем по дате (свежие сверху)
+            filtered_cash_df = filtered_cash_df.sort_values(by="Дата", ascending=False)
+            st.dataframe(filtered_cash_df.drop(columns=["date_obj"]), use_container_width=True, hide_index=True)
+        else:
+            st.write("За выбранный период кассовых движений не найдено.")
+    else:
+        st.write("История движений по кассе пуста.")
+
+    # ФОРМА РУЧНОГО ИЗЪЯТИЯ ДЛЯ АДМИНА
     if user_role == "Администратор":
         st.markdown("---")
         st.subheader("📥 / 📤 Внести или взять деньги из кассы")
@@ -103,23 +175,3 @@ def show_cash_page():
                 }).execute()
                 st.success("🎉 Операция успешно проведена!")
                 st.rerun()
-    else:
-        st.markdown("---")
-        st.info("ℹ️ Проводить инкассацию и ручное изъятие/внесение средств может только Администратор.")
-
-    # ИСТОРИЯ ОПЕРАЦИЙ (Видят все)
-    st.subheader("📜 История кассовых операций")
-    if ops_res.data:
-        df_ops = pd.DataFrame(ops_res.data)
-        display_rows = []
-        for _, row in df_ops.iterrows():
-            amt = float(row['amount'])
-            display_rows.append({
-                "Дата операции": format_time_on_screen(row['date']),
-                "Движение": "🟢 ПРИХОД" if amt > 0 else "🔴 РАСХОД",
-                "Сумма (сом)": int(abs(amt)),
-                "Комментарий / Причина": row['comment']
-            })
-        st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
-    else:
-        st.write("История ручных операций пуста.")
