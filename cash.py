@@ -11,19 +11,20 @@ def show_cash_page():
     # 1. Прямые наличные продажи
     full_cash_sales = sum(s["total_sale"] for s in sales_res.data if s.get("payment") == "Наличные")
     
-    # 2. Долги клиентов по рассрочкам
+    # 2. Долг клиентов по рассрочкам (Исправлена опечатка в слове Рассрочка)
     credit_debts = sum(float(s.get("credit_balance", 0.0)) for s in sales_res.data if s.get("payment") == "Рассрочка")
     
-    # 3. Собранные платежи по рассрочкам
+    # 3. Всего собранно по рассрочкам
     paid_credits_res = supabase.table("credit_payments").select("amount_paid").execute()
     total_credit_collected = sum(float(p["amount_paid"]) for p in paid_credits_res.data)
     
-    # 4. Все операции в кассе (включая первоначальные взносы от активных и удаленных продаж)
+    # 4. Ручной поток кассы (включая первоначальные взносы)
     manual_cash_flow = sum(float(op['amount']) for op in ops_res.data)
     
-    # ИСПРАВЛЕННАЯ ФОРМУЛА: down_payments_cash убран, так как он уже сидит внутри manual_cash_flow
+    # ИСПРАВЛЕННАЯ ФОРМУЛА: Считает точно и не дублирует взносы рассрочек
     current_cash_in_hand = full_cash_sales + manual_cash_flow
     
+    # Верхние карточки (как в твоем оригинале)
     c1, c2, c3 = st.columns(3)
     c1.metric("💵 Наличные в кассе", f"{current_cash_in_hand:,.2f} сом")
     c2.metric("📝 Долг клиентов по рассрочкам", f"{credit_debts - total_credit_collected:,.2f} сом")
@@ -41,3 +42,14 @@ def show_cash_page():
             supabase.table("cash_operations").insert({"date": datetime.now().strftime("%Y-%m-%d %H:%M"), "amount": actual, "comment": comment or op_type}).execute()
             st.success("Операция проведена!")
             st.rerun()
+
+    # ВСЯ ТВОЯ ИСТОРИЯ ОПЕРАЦИЙ (Полностью возвращена на место)
+    st.markdown("---")
+    st.subheader("📜 История кассовых операций")
+    if ops_res.data:
+        df_ops = pd.DataFrame(ops_res.data)
+        df_ops = df_ops.drop(columns=["id", "created_at"], errors="ignore")
+        df_ops = df_ops.rename(columns={"date": "Дата", "amount": "Сумма (сом)", "comment": "Комментарий / Причина"})
+        st.dataframe(df_ops[["Дата", "Сумма (сом)", "Комментарий / Причина"]], use_container_width=True, hide_index=True)
+    else:
+        st.write("История операций пуста.")
