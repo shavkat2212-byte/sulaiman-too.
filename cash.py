@@ -8,15 +8,21 @@ def show_cash_page():
     sales_res = supabase.table("sales").select("total_sale, profit, payment, down_payment, credit_balance").execute()
     ops_res = supabase.table("cash_operations").select("*").order("date", desc=True).execute()
     
+    # 1. Прямые наличные продажи
     full_cash_sales = sum(s["total_sale"] for s in sales_res.data if s.get("payment") == "Наличные")
-    down_payments_cash = sum(float(s.get("down_payment", 0.0)) for s in sales_res.data if s.get("payment") == "Рассрочка")
-    credit_debts = sum(float(s.get("credit_balance", 0.0)) for s in sales_res.data if s.get("payment") == "Рассroчка")
     
+    # 2. Долг клиентов по рассрочкам (исправлена опечатка в слове Рассрочка)
+    credit_debts = sum(float(s.get("credit_balance", 0.0)) for s in sales_res.data if s.get("payment") == "Рассрочка")
+    
+    # 3. Всего собрано по рассрочкам
     paid_credits_res = supabase.table("credit_payments").select("amount_paid").execute()
     total_credit_collected = sum(float(p["amount_paid"]) for p in paid_credits_res.data)
     
+    # 4. Поток из таблицы cash_operations (где уже лежат все взносы)
     manual_cash_flow = sum(float(op['amount']) for op in ops_res.data)
-    current_cash_in_hand = full_cash_sales + down_payments_cash + manual_cash_flow
+    
+    # ИСПРАВЛЕННАЯ ФОРМУЛА: Убран down_payments_cash, чтобы взносы из продаж и кассы не складывались дважды
+    current_cash_in_hand = full_cash_sales + manual_cash_flow
     
     c1, c2, c3 = st.columns(3)
     c1.metric("💵 Наличные в кассе", f"{current_cash_in_hand:,.2f} сом")
@@ -36,6 +42,7 @@ def show_cash_page():
             st.success("Операция проведена!")
             st.rerun()
 
+    # Твоя оригинальная, стабильно работающая таблица истории операций
     st.markdown("---")
     st.subheader("📜 История кассовых операций")
     if ops_res.data:
