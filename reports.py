@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Отчеты и Аналитика
-# Версия программы: 1.7.8 (Исправлен экспорт в Excel)
+# Версия программы: 1.7.9 (Добавлено редактирование операций в отчётах)
 
 import streamlit as st
 import pandas as pd
@@ -141,7 +141,72 @@ def show_reports_page():
         # Показываем таблицу
         cols_to_drop = ["sale_id", "raw_payment"]
         st.dataframe(df_display.drop(columns=cols_to_drop, errors="ignore"), use_container_width=True, hide_index=True)
-        
+
+        # ==================== РЕДАКТИРОВАНИЕ ВЫБРАННОЙ ОПЕРАЦИИ ====================
+        if user_role == "Администратор":
+            st.markdown("---")
+            st.subheader("✏️ Редактировать выбранную операцию")
+
+            st.warning("⚠️ Внимание! Редактирование финансовых данных может повлиять на отчёты, прибыль и остатки. Используй с осторожностью.")
+
+            edit_options = {f"{row['Дата операции']} | {row['Наименование договора / Товара']}": row for idx, row in df_display.iterrows()}
+            selected_edit_label = st.selectbox("Выберите операцию для редактирования", ["-- Не выбрано --"] + list(edit_options.keys()))
+
+            if selected_edit_label != "-- Не выбрано --":
+                selected_row = edit_options[selected_edit_label]
+                sale_id = selected_row["sale_id"]
+
+                # Загружаем полные данные из базы
+                sale_data = supabase.table("sales").select("*").eq("id", sale_id).execute().data
+                if not sale_data:
+                    st.error("Операция не найдена в базе")
+                else:
+                    sale = sale_data[0]
+
+                    with st.form("edit_sale_form", clear_on_submit=False):
+                        new_name = st.text_input("Наименование договора / Товара", value=str(sale.get("name", "")))
+                        new_qty = st.number_input("Количество", min_value=0, value=int(sale.get("qty", 0)))
+                        new_total_sale = st.number_input("Сумма продажи (сом)", min_value=0, value=int(sale.get("total_sale", 0)))
+                        new_total_cost = st.number_input("Себестоимость (сом)", min_value=0, value=int(sale.get("total_cost", 0)))
+
+                        # Автоматический пересчёт прибыли
+                        new_profit = new_total_sale - new_total_cost
+
+                        st.markdown(f"**Прибыль (будет пересчитана):** `{new_profit:,} сом`")
+
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            new_payment = st.selectbox("Тип оплаты", ["Наличные", "Рассрочка"], 
+                                                       index=0 if sale.get("payment") == "Наличные" else 1)
+                        with col2:
+                            new_down_payment = st.number_input("Перв. взнос (сом)", min_value=0, 
+                                                               value=int(sale.get("down_payment", 0) or 0))
+
+                        new_credit_balance = st.number_input("Остаток в рассрочку (сом)", min_value=0, 
+                                                             value=int(sale.get("credit_balance", 0) or 0))
+
+                        submitted = st.form_submit_button("💾 Сохранить изменения в базе", type="primary", use_container_width=True)
+
+                        if submitted:
+                            try:
+                                update_data = {
+                                    "name": new_name.strip(),
+                                    "qty": new_qty,
+                                    "total_sale": new_total_sale,
+                                    "total_cost": new_total_cost,
+                                    "profit": new_profit,
+                                    "payment": new_payment,
+                                    "down_payment": new_down_payment,
+                                    "credit_balance": new_credit_balance
+                                }
+
+                                supabase.table("sales").update(update_data).eq("id", sale_id).execute()
+                                st.success("✅ Изменения успешно сохранены в базе!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Ошибка при сохранении: {e}")
+        # =====================================================================
+
         # --- БЛОК ОТМЕНЫ ПРОДАЖ ---
         if user_role == "Администратор":
             st.markdown("---")
