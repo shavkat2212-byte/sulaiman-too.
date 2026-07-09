@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Состояние кассы
-# Версия программы: 1.9.0 (Исправлено по логам сервера, убрано дублирование, итоги приходов/расходов)
+# Версия программы: 1.9.5 (Финальное исправление по hint базы данных, колонки приходов и расходов)
 
 import streamlit as st
 import pandas as pd
@@ -9,10 +9,10 @@ from database import supabase
 def show_cash_page():
     st.header("💵 Состояние кассы магазина")
     
-    # 1. ЗАГРУЗКА ДАННЫХ ИЗ БАЗЫ (Проверенные запросы)
+    # 1. ЗАГРУЗКА ДАННЫХ ИЗ БАЗЫ (Твои рабочие запросы)
     sales_res = supabase.table("sales").select("total_sale, profit, payment, down_payment, credit_balance, day, name").execute()
     ops_res = supabase.table("cash_operations").select("*").order("date", desc=True).execute()
-    payments_res = supabase.table("credit_payments").select("amount_paid, created_at, client_id").execute()
+    payments_res = supabase.table("credit_payments").select("amount_paid, updated_at, client_id").execute()
     
     clients_raw = supabase.table("clients").select("id, fio").execute()
     clients_dict = {c["id"]: c["fio"] for c in clients_raw.data} if clients_raw.data else {}
@@ -22,10 +22,10 @@ def show_cash_page():
     credit_debts = sum(float(s.get("credit_balance", 0.0)) for s in sales_res.data if s.get("payment") == "Рассрочка")
     total_credit_collected = sum(float(p.get("amount_paid", 0.0)) for p in payments_res.data)
     
-    # Считаем ручной поток из cash_operations (где уже сидят все взносы)
+    # Считаем ручной поток из cash_operations (где уже лежат все взносы)
     manual_cash_flow = sum(float(op.get('amount', 0.0)) for op in ops_res.data)
     
-    # ПРАВИЛЬНАЯ ИТОГОВАЯ ФОРМУЛА: Взносы из sales убраны, чтобы сумма не двоилась
+    # ПРАВИЛЬНАЯ ИТОГОВАЯ ФОРМУЛА: Убран взнос из sales, чтобы сумма не удваивалась
     current_cash_in_hand = full_cash_sales + manual_cash_flow
     
     c1, c2, c3 = st.columns(3)
@@ -52,18 +52,18 @@ def show_cash_page():
             st.success("Операция проведена!")
             st.rerun()
 
-    # --- КАЛЕНДАРНЫЙ ФИЛЬТР ПО ДНЯМ (ЗАЩИЩЕННЫЙ ОТ СБОЕВ СТРИМЛИТА) ---
+    # --- РАЗДЕЛЬНЫЙ КАЛЕНДАРНЫЙ ФИЛЬТР (Железная защита от перезапусков Стримлита) ---
     st.markdown("---")
     st.subheader("🔍 Выберите период для просмотра приходов и расходов кассы")
     col_d1, col_d2 = st.columns(2)
     start_date = col_d1.date_input("С даты", value=datetime.now().date(), key="c_start")
     end_date = col_d2.date_input("По дату", value=datetime.now().date(), key="c_end")
 
-    # Списки для таблиц приходов и расходов
+    # Списки для таблиц
     income_records = []
     expense_records = []
 
-    # 1. Сбор прямых продаж за наличные (из sales)
+    # 1. Наличные продажи из sales
     for s in sales_res.data:
         if s.get("payment") == "Наличные" and s.get("day"):
             try: d_obj = datetime.strptime(s["day"], "%Y-%m-%d").date()
@@ -73,10 +73,10 @@ def show_cash_page():
                     "Дата": s["day"], "Сумма (сом)": int(s.get("total_sale", 0)), "Описание / Причина": f"Наличная продажа: {s.get('name', '')}"
                 })
 
-    # 2. Сбор платежей по рассрочкам (из credit_payments по правильной колонке created_at)
+    # 2. Оплаты рассрочек из credit_payments (По ПРАВИЛЬНОЙ колонке updated_at!)
     for p in payments_res.data:
         p_amt = float(p.get("amount_paid", 0) or 0)
-        p_date = p.get("created_at") or ""
+        p_date = p.get("updated_at") or ""
         if p_amt > 0 and p_date:
             try: d_obj = datetime.strptime(p_date[:10], "%Y-%m-%d").date()
             except: continue
@@ -86,7 +86,7 @@ def show_cash_page():
                     "Дата": p_date[:16].replace("T", " "), "Сумма (сом)": int(p_amt), "Описание / Причина": f"Погашение рассрочки от {client_name}"
                 })
 
-    # 3. Сбор ручных операций из cash_operations
+    # 3. Ручные движения и взносы из cash_operations
     for op in ops_res.data:
         op_date = op.get("date") or ""
         if not op_date: continue
