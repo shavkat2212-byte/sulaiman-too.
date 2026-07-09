@@ -2,6 +2,12 @@
 # Версия программы: 1.7.5 (Исправлен двойной вход, авторизация только по паролю админа)
 
 import streamlit as st
+from utils import (
+    format_date_to_ddmmyyyy,
+    fix_legacy_zero_month,
+    fix_contract_name_on_fly,
+    get_batch_display_date
+)
 from database import authenticate_user, check_has_users, hash_password, supabase
 
 # Импорты модулей
