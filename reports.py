@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Отчеты и Аналитика
-# Версия программы: 1.7.7 (Добавлен экспорт в Excel)
+# Версия программы: 1.7.8 (Исправлен экспорт в Excel)
 
 import streamlit as st
 import pandas as pd
@@ -91,28 +91,7 @@ def show_reports_page():
         st.markdown("---")
         st.subheader("📋 Список оформленных чеков")
 
-        # ==================== НОВЫЙ БЛОК: ЭКСПОРТ В EXCEL ====================
-        if user_role == "Администратор":
-            col_exp1, col_exp2 = st.columns([3, 1])
-            with col_exp2:
-                if st.button("📥 Скачать в Excel", use_container_width=True):
-                    export_df = df_display.copy() if 'df_display' in locals() else pd.DataFrame()
-                    if not export_df.empty:
-                        output = io.BytesIO()
-                        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                            export_df.to_excel(writer, index=False, sheet_name='Продажи')
-                        output.seek(0)
-                        st.download_button(
-                            label="📥 Скачать Excel файл",
-                            data=output,
-                            file_name=f"отчет_продажи_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            use_container_width=True
-                        )
-                    else:
-                        st.warning("Нет данных для экспорта")
-        # =====================================================================
-
+        # ==================== СОЗДАНИЕ ДАННЫХ ДЛЯ ТАБЛИЦЫ ====================
         report_display = []
         for _, row in filtered_df.iterrows():
             fixed_name = fix_contract_name_on_fly(row['name'], row['date'])
@@ -137,10 +116,33 @@ def show_reports_page():
             report_display.append(item_data)
         
         df_display = pd.DataFrame(report_display)
+        # =====================================================================
+
+        # ==================== КНОПКА ЭКСПОРТА В EXCEL ====================
+        if user_role == "Администратор" and not df_display.empty:
+            col_btn1, col_btn2 = st.columns([5, 2])
+            with col_btn2:
+                excel_buffer = io.BytesIO()
+                with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                    df_display.drop(columns=["sale_id", "raw_payment"], errors="ignore").to_excel(
+                        writer, index=False, sheet_name="Продажи"
+                    )
+                excel_buffer.seek(0)
+
+                st.download_button(
+                    label="📥 Скачать в Excel",
+                    data=excel_buffer,
+                    file_name=f"Отчет_продажи_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+        # =====================================================================
+
+        # Показываем таблицу
         cols_to_drop = ["sale_id", "raw_payment"]
         st.dataframe(df_display.drop(columns=cols_to_drop, errors="ignore"), use_container_width=True, hide_index=True)
         
-        # --- БЛОК ОТМЕНЫ ---
+        # --- БЛОК ОТМЕНЫ ПРОДАЖ ---
         if user_role == "Администратор":
             st.markdown("---")
             st.subheader("⚙️ Управление и отмена продаж")
