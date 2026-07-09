@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Отчеты и Аналитика
-# Версия программы: 1.7.5 (Исправлен парсинг круглых скобок для точной отмены рассрочек)
+# Версия программы: 1.7.6 (Рефакторинг: вынесены функции дат в utils.py)
 
 import streamlit as st
 import pandas as pd
@@ -8,26 +8,14 @@ import re
 from datetime import datetime
 from database import supabase
 
-def format_any_date(date_str, include_time=False):
-    if not date_str: return "-"
-    date_str = str(date_str).strip()
-    if "." in date_str[:10]: return date_str
-    try:
-        if " " in date_str:
-            date_part, time_part = date_str.split(" ")
-            parsed_d = datetime.strptime(date_part, "%Y-%m-%d").strftime("%d.%m.%Y")
-            return f"{parsed_d} {time_part}" if include_time else parsed_d
-        else:
-            return datetime.strptime(date_str[:10], "%Y-%m-%d").strftime("%d.%m.%Y")
-    except: return date_str
+# === ИМПОРТЫ ИЗ UTILS ===
+from utils import (
+    format_date_to_ddmmyyyy,
+    fix_legacy_zero_month,
+    fix_contract_name_on_fly,
+    parse_date_flexible
+)
 
-def fix_contract_name_on_fly(name_str, date_str):
-    if not name_str: return name_str
-    if "№202607" in str(name_str):
-        clean_date = format_any_date(date_str, include_time=False)
-        new_num = clean_date.replace(".", "")[:4]
-        return str(name_str).replace("№202607", f"№{new_num}")
-    return name_str
 
 def show_reports_page():
     user_role = st.session_state.get("user", {}).get("role", "Кассир")
@@ -46,9 +34,11 @@ def show_reports_page():
     
     def parse_day_for_filter(x):
         try:
-            if "." in str(x): return datetime.strptime(str(x)[:10], "%d.%m.%Y").date()
+            if "." in str(x): 
+                return datetime.strptime(str(x)[:10], "%d.%m.%Y").date()
             return datetime.strptime(str(x)[:10], "%Y-%m-%d").date()
-        except: return datetime.now().date()
+        except: 
+            return datetime.now().date()
             
     df['day_obj'] = df['day'].apply(parse_day_for_filter)
     
@@ -58,7 +48,8 @@ def show_reports_page():
         if isinstance(date_range, tuple) and len(date_range) == 2:
             start_date, end_date = date_range
             filtered_df = df[(df['day_obj'] >= start_date) & (df['day_obj'] <= end_date)]
-        else: filtered_df = pd.DataFrame()
+        else: 
+            filtered_df = pd.DataFrame()
     else:
         today_date = datetime.now().date()
         filtered_df = df[df['day_obj'] == today_date]
@@ -105,7 +96,7 @@ def show_reports_page():
         for _, row in filtered_df.iterrows():
             fixed_name = fix_contract_name_on_fly(row['name'], row['date'])
             item_data = {
-                "Дата операции": format_any_date(row['date'], include_time=True),
+                "Дата операции": format_date_to_ddmmyyyy(row['date'], include_time=True),
                 "Наименование договора / Товара": fixed_name,
                 "Кол-во": int(row['qty']),
                 "Тип оплаты": row['payment'],
@@ -118,7 +109,8 @@ def show_reports_page():
             if user_role == "Администратор":
                 if row['payment'] == 'Рассрочка':
                     row_profit = (int(row.get('down_payment', 0) or 0) + int(row.get('credit_balance', 0) or 0)) - int(row['total_cost'])
-                else: row_profit = int(row['profit'])
+                else: 
+                    row_profit = int(row['profit'])
                 item_data["Закупка (сом)"] = int(row['total_cost'])
                 item_data["Прибыль (сом)"] = int(row_profit)
             report_display.append(item_data)
@@ -127,7 +119,7 @@ def show_reports_page():
         cols_to_drop = ["sale_id", "raw_payment"]
         st.dataframe(df_display.drop(columns=cols_to_drop, errors="ignore"), use_container_width=True, hide_index=True)
         
-        # --- БЛОК ОКОНЧАТЕЛЬНОЙ ОТМЕНЫ (УСПЕШНО ЧИТАЕТ КРУГЛЫЕ СКОБКИ) ---
+        # --- БЛОК ОКОНЧАТЕЛЬНОЙ ОТМЕНЫ ---
         if user_role == "Администратор":
             st.markdown("---")
             st.subheader("⚙️ Управление и отмена продаж")
@@ -153,40 +145,39 @@ def show_reports_page():
                                     if batch_res.data:
                                         supabase.table("products").update({"qty": int(batch_res.data[0]["qty"]) + int(s_del["Кол-во"])}).eq("id", batch_res.data[0]["id"]).execute()
                                 
-                            # 2. Отмена рассрочек (ИСПРАВЛЕНО НА КРУГЛЫЕ СКОБКИ)
+                            # 2. Отмена рассрочек
                             elif s_del["raw_payment"] == "Рассрочка":
-                                # Ищем всё, что находится после слова "Товары: " внутри круглых скобок
                                 match_items = re.search(r"Товары:\s*(.*?)\)", s_del["Наименование договора / Товара"])
                                 if match_items:
-                                    # Разбиваем строку, если товаров было несколько через запятую
                                     for part in match_items.group(1).split(", "):
                                         item_match = re.search(r"(.*)\s+\((\d+)\s+шт\.\)", part)
                                         if item_match:
                                             p_name = item_match.group(1).strip().lower()
                                             p_qty = int(item_match.group(2))
                                             
-                                            # Возвращаем остаток к последней активной партии товара
                                             b_res = supabase.table("products").select("id", "qty").eq("name", p_name).order("date", desc=True).execute()
                                             if b_res.data:
                                                 supabase.table("products").update({"qty": int(b_res.data[0]["qty"]) + p_qty}).eq("id", b_res.data[0]["id"]).execute()
                             
-                            # Удаляем записи из таблиц продаж и графика
+                            # Удаляем записи
                             supabase.table("sales").delete().eq("id", s_del["sale_id"]).execute()
                             supabase.table("credit_payments").delete().eq("sale_id", s_del["sale_id"]).execute()
                             
-                            # Удаляем запись о перв. взносе из кассы, если он был
                             if int(s_del["Перв. взнос (Нал)"]) > 0:
                                 supabase.table("cash_operations").delete().eq("amount", float(s_del["Перв. взнос (Нал)"])).execute()
                                 
                             st.success("🎉 Операция успешно отменена, товары возвращены на склад!")
                             st.rerun()
-                        except Exception as e: st.error(f"Ошибка при удалении продажи: {e}")
+                        except Exception as e: 
+                            st.error(f"Ошибка при удалении продажи: {e}")
     else:
         st.info("Сегодня продаж еще не зафиксировано.")
 
+
 def show_supplier_page():
     user_role = st.session_state.get("user", {}).get("role", "Кассир")
-    if user_role != "Администратор": return
+    if user_role != "Администратор": 
+        return
         
     st.header("Выплаты поставщикам и контрагентам")
     with st.form("supplier_payment"):
@@ -197,7 +188,10 @@ def show_supplier_page():
             if supplier:
                 now_formatted = datetime.now().strftime("%d.%m.%Y %H:%M")
                 supabase.table("supplier_payments").insert({
-                    "date": now_formatted, "supplier": supplier.strip(), "amount": amount, "comment": comment
+                    "date": now_formatted, 
+                    "supplier": supplier.strip(), 
+                    "amount": amount, 
+                    "comment": comment
                 }).execute()
                 st.success("Выплата отправлена!")
                 st.rerun()
