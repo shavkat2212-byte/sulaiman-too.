@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Касса
-# Версия программы: 1.5 (Добавлены итоги, фильтр по датам и экспорт в Excel)
+# Версия программы: 1.7 (Уточнена логика: окно только для расходов)
 
 import streamlit as st
 import pandas as pd
@@ -10,10 +10,10 @@ from database import supabase
 def show_cash_page():
     st.header("💵 Состояние кассы магазина")
     
-    # Основные метрики
-    sales_res = supabase.table("sales").select("total_sale, profit, payment, down_payment, credit_balance").execute()
+    sales_res = supabase.table("sales").select("*").execute()
     ops_res = supabase.table("cash_operations").select("*").order("date", desc=True).execute()
     
+    # ==================== ОСНОВНЫЕ МЕТРИКИ ====================
     full_cash_sales = sum(float(s["total_sale"]) for s in sales_res.data if s.get("payment") == "Наличные")
     manual_cash_flow = sum(float(op['amount']) for op in ops_res.data)
     current_cash_in_hand = full_cash_sales + manual_cash_flow
@@ -26,7 +26,7 @@ def show_cash_page():
               f"{sum(float(s.get('profit', 0)) for s in sales_res.data):,.2f} сом")
 
     st.markdown("---")
-    st.subheader("📜 История кассовых операций")
+    st.subheader("📜 История кассовых операций + Итоги")
 
     # Фильтр по датам
     col_f1, col_f2 = st.columns(2)
@@ -35,21 +35,32 @@ def show_cash_page():
     with col_f2:
         end_date = st.date_input("Конец периода", value=datetime.now().date())
 
-    # Фильтрация операций
+    # ==================== ФИЛЬТРАЦИЯ ====================
     df_ops = pd.DataFrame(ops_res.data) if ops_res.data else pd.DataFrame()
-    
+    df_sales = pd.DataFrame(sales_res.data) if sales_res.data else pd.DataFrame()
+
     if not df_ops.empty:
-        df_ops['date_obj'] = pd.to_datetime(df_ops['date'].str[:10], errors='coerce').dt.date
-        filtered_ops = df_ops[(df_ops['date_obj'] >= start_date) & (df_ops['date_obj'] <= end_date)]
+        df_ops['date_obj'] = pd.to_datetime(df_ops['date'].astype(str).str[:10], errors='coerce').dt.date
+        filtered_ops = df_ops[(df_ops['date_obj'] >= start_date) & (df_ops['date_obj'] <= end_date)].copy()
     else:
         filtered_ops = pd.DataFrame()
 
-    # Итоги по отфильтрованным операциям
-    total_in = filtered_ops[filtered_ops['amount'] > 0]['amount'].sum() if not filtered_ops.empty else 0
+    if not df_sales.empty:
+        df_sales['day_obj'] = pd.to_datetime(df_sales['day'].astype(str).str[:10], errors='coerce').dt.date
+        filtered_sales = df_sales[(df_sales['day_obj'] >= start_date) & (df_sales['day_obj'] <= end_date)]
+        cash_sales_period = filtered_sales[filtered_sales['payment'] == 'Наличные']['total_sale'].sum()
+    else:
+        cash_sales_period = 0
+
+    # ==================== ИТОГИ ====================
+    total_in_ops = filtered_ops[filtered_ops['amount'] > 0]['amount'].sum() if not filtered_ops.empty else 0
     total_out = abs(filtered_ops[filtered_ops['amount'] < 0]['amount'].sum()) if not filtered_ops.empty else 0
+
+    # Пополнения = Наличные продажи + Положительные операции из cash_operations (взносы и погашения)
+    total_in = cash_sales_period + total_in_ops
     net = total_in - total_out
 
-    # ==================== ЭКСПОРТ В EXCEL ====================
+    # Экспорт
     if not filtered_ops.empty:
         col_exp1, col_exp2 = st.columns([5, 2])
         with col_exp2:
@@ -59,7 +70,6 @@ def show_cash_page():
                     writer, index=False, sheet_name="Касса"
                 )
             excel_buffer.seek(0)
-
             st.download_button(
                 label="📥 Экспорт в Excel",
                 data=excel_buffer,
@@ -67,7 +77,6 @@ def show_cash_page():
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
-    # =====================================================================
 
     # Таблица
     if not filtered_ops.empty:
@@ -77,37 +86,38 @@ def show_cash_page():
     else:
         st.info("Операций за выбранный период нет.")
 
-    # ==================== ИТОГИ ====================
+    # ==================== ИТОГИ ПО ПЕРИОДУ ====================
     st.markdown("---")
     st.subheader("📊 Итоги по периоду")
-    col_sum1, col_sum2, col_sum3 = st.columns(3)
-    col_sum1.metric("💰 Пополнения в кассу", f"{total_in:,.0f} сом", delta=None)
-    col_sum2.metric("📤 Расходы / Изъятия", f"{total_out:,.0f} сом", delta=None)
-    col_sum3.metric("📈 Чистый результат", f"{net:,.0f} сом", 
-                   delta="Положительный" if net >= 0 else "Отрицательный")
-    # =====================================================================
 
+    col_sum1, col_sum2, col_sum3 = st.columns(3)
+    col_sum1.metric("💰 Автоматические пополнения", f"{int(total_in):,} сом")
+    col_sum2.metric("📤 Ручные расходы / изъятия", f"{int(total_out):,} сом")
+    col_sum3.metric("📈 Чистый результат за период", f"{int(net):,} сом", 
+                   delta="Положительный" if net >= 0 else "Отрицательный")
+
+    st.caption("Пополнения = Наличные продажи + Первоначальные взносы + Частичные платежи по рассрочке")
+
+    # ==================== НОВАЯ ОПЕРАЦИЯ (ТОЛЬКО РАСХОДЫ) ====================
     st.markdown("---")
-    st.subheader("📥 / 📤 Новая операция")
+    st.subheader("📤 Новая операция (только расходы / изъятия из кассы)")
 
     with st.form("cash_op_form", clear_on_submit=True):
-        op_type = st.selectbox("Тип операции", [
-            "Положить деньги (Пополнение/Сдача)",
-            "Взять деньги (Инкассация/Личные нужды)",
+        op_type = st.selectbox("Тип расхода", [
+            "Взять деньги (Инкассация / Личные нужды)",
             "Выплата за товар (Поставщику)"
         ])
         
         amount = st.number_input("Сумма, сом", min_value=1.0, value=1000.0)
-        comment = st.text_input("Комментарий / Причина", 
-                               value="Выплата поставщику" if "Выплата" in op_type else "")
+        comment = st.text_input("Комментарий / Причина", value=op_type)
         
-        if st.form_submit_button("Выполнить операцию", type="primary"):
-            actual = amount if "Положить" in op_type or "Выплата" not in op_type else -amount
+        if st.form_submit_button("Списать из кассы", type="primary"):
+            actual = -amount   # Всегда минус, т.к. это расход
             
             supabase.table("cash_operations").insert({
                 "date": datetime.now().strftime("%d.%m.%Y %H:%M"),
                 "amount": actual,
                 "comment": comment or op_type
             }).execute()
-            st.success("✅ Операция успешно проведена!")
+            st.success("✅ Расход зафиксирован!")
             st.rerun()
