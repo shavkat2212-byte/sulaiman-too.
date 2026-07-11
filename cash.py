@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Касса
-# Версия программы: 1.7 (Уточнена логика: окно только для расходов)
+# Версия программы: 1.8 (Добавлено кэширование)
 
 import streamlit as st
 import pandas as pd
@@ -7,23 +7,31 @@ import io
 from datetime import datetime, timedelta
 from database import supabase
 
+@st.cache_data(ttl=30)
+def get_sales_data():
+    return supabase.table("sales").select("*").execute().data
+
+@st.cache_data(ttl=30)
+def get_cash_operations():
+    return supabase.table("cash_operations").select("*").order("date", desc=True).execute().data
+
 def show_cash_page():
     st.header("💵 Состояние кассы магазина")
     
-    sales_res = supabase.table("sales").select("*").execute()
-    ops_res = supabase.table("cash_operations").select("*").order("date", desc=True).execute()
+    sales_data = get_sales_data()
+    ops_data = get_cash_operations()
     
     # ==================== ОСНОВНЫЕ МЕТРИКИ ====================
-    full_cash_sales = sum(float(s["total_sale"]) for s in sales_res.data if s.get("payment") == "Наличные")
-    manual_cash_flow = sum(float(op['amount']) for op in ops_res.data)
+    full_cash_sales = sum(float(s["total_sale"]) for s in sales_data if s.get("payment") == "Наличные")
+    manual_cash_flow = sum(float(op['amount']) for op in ops_data)
     current_cash_in_hand = full_cash_sales + manual_cash_flow
 
     c1, c2, c3 = st.columns(3)
     c1.metric("💵 Наличные в кассе", f"{current_cash_in_hand:,.2f} сом")
     c2.metric("📝 Долг клиентов по рассрочкам", 
-              f"{sum(float(s.get('credit_balance', 0)) for s in sales_res.data if s.get('payment') == 'Рассрочка'):,} сом")
+              f"{sum(float(s.get('credit_balance', 0)) for s in sales_data if s.get('payment') == 'Рассрочка'):,} сом")
     c3.metric("📈 Чистая прибыль (всего)", 
-              f"{sum(float(s.get('profit', 0)) for s in sales_res.data):,.2f} сом")
+              f"{sum(float(s.get('profit', 0)) for s in sales_data):,.2f} сом")
 
     st.markdown("---")
     st.subheader("📜 История кассовых операций + Итоги")
@@ -36,8 +44,8 @@ def show_cash_page():
         end_date = st.date_input("Конец периода", value=datetime.now().date())
 
     # ==================== ФИЛЬТРАЦИЯ ====================
-    df_ops = pd.DataFrame(ops_res.data) if ops_res.data else pd.DataFrame()
-    df_sales = pd.DataFrame(sales_res.data) if sales_res.data else pd.DataFrame()
+    df_ops = pd.DataFrame(ops_data) if ops_data else pd.DataFrame()
+    df_sales = pd.DataFrame(sales_data) if sales_data else pd.DataFrame()
 
     if not df_ops.empty:
         df_ops['date_obj'] = pd.to_datetime(df_ops['date'].astype(str).str[:10], errors='coerce').dt.date
@@ -56,7 +64,6 @@ def show_cash_page():
     total_in_ops = filtered_ops[filtered_ops['amount'] > 0]['amount'].sum() if not filtered_ops.empty else 0
     total_out = abs(filtered_ops[filtered_ops['amount'] < 0]['amount'].sum()) if not filtered_ops.empty else 0
 
-    # Пополнения = Наличные продажи + Положительные операции из cash_operations (взносы и погашения)
     total_in = cash_sales_period + total_in_ops
     net = total_in - total_out
 
@@ -98,7 +105,7 @@ def show_cash_page():
 
     st.caption("Пополнения = Наличные продажи + Первоначальные взносы + Частичные платежи по рассрочке")
 
-    # ==================== НОВАЯ ОПЕРАЦИЯ (ТОЛЬКО РАСХОДЫ) ====================
+    # ==================== НОВАЯ ОПЕРАЦИЯ (только расходы) ====================
     st.markdown("---")
     st.subheader("📤 Новая операция (только расходы / изъятия из кассы)")
 
@@ -112,7 +119,7 @@ def show_cash_page():
         comment = st.text_input("Комментарий / Причина", value=op_type)
         
         if st.form_submit_button("Списать из кассы", type="primary"):
-            actual = -amount   # Всегда минус, т.к. это расход
+            actual = -amount
             
             supabase.table("cash_operations").insert({
                 "date": datetime.now().strftime("%d.%m.%Y %H:%M"),
