@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Касса
-# Версия: 2.2 (даты теперь в формате как в твоей базе Supabase)
+# Версия: 2.3 (Добавлена таблица "Остаток кассы по дням")
 
 import streamlit as st
 import pandas as pd
@@ -28,15 +28,57 @@ def show_cash_page():
     current_cash_in_hand = full_cash_sales + manual_cash_flow
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("💵 Наличные в кассе", f"{current_cash_in_hand:,.2f} сом")
+    c1.metric("💵 Наличные в кассе (сейчас)", f"{current_cash_in_hand:,.2f} сом")
     c2.metric("📝 Долг клиентов по рассрочкам", 
               f"{sum(float(s.get('credit_balance', 0)) for s in sales_data if s.get('payment') == 'Рассрочка'):,} сом")
     c3.metric("📈 Чистая прибыль (всего)", 
               f"{sum(float(s.get('profit', 0)) for s in sales_data):,.2f} сом")
 
     st.markdown("---")
-    st.subheader("📜 История кассовых операций + Итоги")
+    st.subheader("📊 Остаток кассы по дням")
 
+    # ==================== РАСЧЁТ ОСТАТКА ПО ДНЯМ ====================
+    # Собираем все операции за всё время
+    all_ops = []
+    for s in sales_data:
+        if s.get("payment") == "Наличные":
+            all_ops.append({
+                "day": s.get("day"),
+                "amount": float(s.get("total_sale", 0))
+            })
+    
+    for op in ops_data:
+        all_ops.append({
+            "day": op.get("date")[:10] if op.get("date") else None,
+            "amount": float(op.get("amount", 0))
+        })
+
+    if all_ops:
+        df_all = pd.DataFrame(all_ops)
+        df_all = df_all[df_all['day'].notna()]
+        daily = df_all.groupby('day')['amount'].sum().reset_index()
+        daily = daily.sort_values('day')
+        daily['balance'] = daily['amount'].cumsum()
+        
+        # Красивая таблица
+        daily_display = daily.copy()
+        daily_display['amount'] = daily_display['amount'].map('{:,.0f}'.format)
+        daily_display['balance'] = daily_display['balance'].map('{:,.0f}'.format)
+        daily_display = daily_display.rename(columns={
+            'day': 'Дата',
+            'amount': 'Приход/Расход за день',
+            'balance': 'Остаток на конец дня'
+        })
+        
+        st.dataframe(daily_display, use_container_width=True, hide_index=True)
+    else:
+        st.info("Пока нет операций для расчёта остатка.")
+    # =====================================================================
+
+    st.markdown("---")
+    st.subheader("📜 История операций")
+
+    # Фильтр по датам (оставляем)
     col_f1, col_f2 = st.columns(2)
     with col_f1:
         start_date = st.date_input("Начало периода", value=datetime.now().date() - timedelta(days=30))
@@ -44,99 +86,27 @@ def show_cash_page():
         end_date = st.date_input("Конец периода", value=datetime.now().date())
 
     df_ops = pd.DataFrame(ops_data) if ops_data else pd.DataFrame()
-    df_sales = pd.DataFrame(sales_data) if sales_data else pd.DataFrame()
 
-    # ==================== ПРАВИЛЬНЫЙ ПАРСИНГ ДАТ (под твой формат в базе) ====================
-    filtered_ops = pd.DataFrame()
     if not df_ops.empty:
         try:
-            # Берём первые 16 символов (YYYY-MM-DD HH:MM) и явно указываем формат
-            df_ops['date_obj'] = pd.to_datetime(
-                df_ops['date'].astype(str).str[:16], 
-                format='%Y-%m-%d %H:%M', 
-                errors='coerce'
-            ).dt.date
-            
-            valid_dates = df_ops['date_obj'].notna()
-            filtered_ops = df_ops[valid_dates & 
-                                  (df_ops['date_obj'] >= start_date) & 
-                                  (df_ops['date_obj'] <= end_date)].copy()
-        except Exception as e:
-            st.warning(f"Ошибка при обработке дат: {e}")
-            filtered_ops = df_ops
-
-    # Расчёт наличных продаж за период
-    cash_sales_period = 0
-    if not df_sales.empty:
-        try:
-            df_sales['day_obj'] = pd.to_datetime(
-                df_sales['day'].astype(str).str[:10], 
-                format='%Y-%m-%d', 
-                errors='coerce'
-            ).dt.date
-            filtered_sales = df_sales[(df_sales['day_obj'] >= start_date) & 
-                                      (df_sales['day_obj'] <= end_date)]
-            cash_sales_period = filtered_sales[filtered_sales['payment'] == 'Наличные']['total_sale'].sum()
+            df_ops['date_obj'] = pd.to_datetime(df_ops['date'].astype(str).str[:10], format='%Y-%m-%d', errors='coerce').dt.date
+            filtered_ops = df_ops[(df_ops['date_obj'] >= start_date) & (df_ops['date_obj'] <= end_date)].copy()
         except:
-            cash_sales_period = 0
+            filtered_ops = df_ops
+    else:
+        filtered_ops = pd.DataFrame()
 
-    total_in_ops = filtered_ops[filtered_ops['amount'] > 0]['amount'].sum() if not filtered_ops.empty else 0
-    total_out = abs(filtered_ops[filtered_ops['amount'] < 0]['amount'].sum()) if not filtered_ops.empty else 0
-    total_in = cash_sales_period + total_in_ops
-    net = total_in - total_out
-
-    # ==================== ТАБЛИЦА + ЭКСПОРТ ====================
+    # Таблица истории
     if not filtered_ops.empty:
-        col_exp1, col_exp2 = st.columns([5, 2])
-        with col_exp2:
-            excel_buffer = io.BytesIO()
-            with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                filtered_ops[["id", "date", "amount", "comment", "created_at"]].to_excel(
-                    writer, index=False, sheet_name="Касса"
-                )
-            excel_buffer.seek(0)
-            st.download_button(
-                label="📥 Экспорт в Excel",
-                data=excel_buffer,
-                file_name=f"Касса_{start_date}_{end_date}.xlsx",
-                use_container_width=True
-            )
-
         display_df = filtered_ops[["id", "date", "amount", "comment", "created_at"]].copy()
         display_df["amount"] = display_df["amount"].map('{:,.0f}'.format)
         st.dataframe(display_df, use_container_width=True, hide_index=True)
     else:
         st.info("Операций за выбранный период нет.")
 
-    # ==================== УДАЛЕНИЕ ОПЕРАЦИИ ====================
-    if user_role == "Администратор" and not filtered_ops.empty:
-        st.markdown("---")
-        st.subheader("🗑️ Удалить операцию из истории (только для Администратора)")
-
-        with st.form("delete_form"):
-            options = {
-                f"{row['id']} | {row['date']} | {int(row['amount']):,} сом | {row.get('comment', '')}": row['id']
-                for _, row in filtered_ops.iterrows()
-            }
-            selected_label = st.selectbox("Выберите операцию для удаления", list(options.keys()))
-            selected_id = options[selected_label]
-
-            confirm = st.checkbox("Я подтверждаю удаление этой операции")
-            
-            if st.form_submit_button("🗑️ Удалить операцию", type="primary"):
-                if confirm:
-                    try:
-                        supabase.table("cash_operations").delete().eq("id", selected_id).execute()
-                        st.success("✅ Операция успешно удалена!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Ошибка при удалении: {e}")
-                else:
-                    st.warning("Поставьте галочку подтверждения перед удалением.")
-
-    # ==================== НОВАЯ ОПЕРАЦИЯ ====================
+    # Новая операция (только расходы)
     st.markdown("---")
-    st.subheader("📤 Новая операция (только расходы / изъятия из кассы)")
+    st.subheader("📤 Новая операция (только расходы / изъятия)")
 
     with st.form("cash_op_form", clear_on_submit=True):
         op_type = st.selectbox("Тип расхода", [
@@ -147,11 +117,10 @@ def show_cash_page():
         comment = st.text_input("Комментарий / Причина", value=op_type)
 
         if st.form_submit_button("Списать из кассы", type="primary"):
-            # Теперь дата в том же формате, что и у тебя в базе
             supabase.table("cash_operations").insert({
                 "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "amount": -amount,
                 "comment": comment or op_type
             }).execute()
-            st.success("✅ Расход успешно зафиксирован!")
+            st.success("✅ Расход зафиксирован!")
             st.rerun()
