@@ -1,9 +1,8 @@
 # Магазин «Сулайман-Тоо» — Модуль: Касса
-# Версия: 2.6 (Улучшенная таблица остатка по дням)
+# Версия: 2.7 (Исправлен расчёт остатка по дням)
 
 import streamlit as st
 import pandas as pd
-import io
 from datetime import datetime, timedelta
 from database import supabase
 
@@ -37,69 +36,126 @@ def show_cash_page():
     st.markdown("---")
     st.subheader("📊 Остаток кассы по дням")
 
-    # ==================== УЛУЧШЕННЫЙ РАСЧЁТ ПО ДНЯМ ====================
+    # ==================== ПРАВИЛЬНЫЙ РАСЧЁТ ПО ДНЯМ ====================
     all_ops = []
 
-    # Наличные продажи
+    # 1. Наличные продажи
     for s in sales_data:
         if s.get("payment") == "Наличные":
-            all_ops.append({
-                "day": s.get("day")[:10] if s.get("day") else None,
-                "cash_sales": float(s.get("total_sale", 0)),
-                "inflow": 0,
-                "outflow": 0
-            })
+            day = str(s.get("day", ""))[:10]
+            if day:
+                all_ops.append({
+                    "day": day,
+                    "cash_sales": float(s.get("total_sale", 0)),
+                    "inflow": 0.0,
+                    "outflow": 0.0
+                })
 
-    # Операции из cash_operations
+    # 2. Операции из cash_operations
     for op in ops_data:
+        day = str(op.get("date", ""))[:10]
+        if not day:
+            continue
         amount = float(op.get("amount", 0))
         all_ops.append({
-            "day": op.get("date")[:10] if op.get("date") else None,
-            "cash_sales": 0,
-            "inflow": amount if amount > 0 else 0,
-            "outflow": -amount if amount < 0 else 0
+            "day": day,
+            "cash_sales": 0.0,
+            "inflow": amount if amount > 0 else 0.0,
+            "outflow": -amount if amount < 0 else 0.0   # делаем положительным для отображения
         })
 
     if all_ops:
         df_all = pd.DataFrame(all_ops)
-        df_all = df_all[df_all['day'].notna()]
         
-        daily = df_all.groupby('day').sum().reset_index().sort_values('day')
+        # Группируем по дням
+        daily = df_all.groupby('day').agg({
+            'cash_sales': 'sum',
+            'inflow': 'sum',
+            'outflow': 'sum'
+        }).reset_index().sort_values('day')
+
+        # Чистый результат за день
+        daily['net'] = daily['cash_sales'] + daily['inflow'] - daily['outflow']
         
-        # Кумулятивный остаток
-        daily['balance'] = daily['cash_sales'] + daily['inflow'] + daily['outflow']
-        daily['balance'] = daily['balance'].cumsum()
+        # Остаток на конец дня (кумулятивный)
+        daily['balance_end'] = daily['net'].cumsum()
         
-        # Сдвиг для остатка на начало дня
-        daily['balance_start'] = daily['balance'].shift(1, fill_value=0)
-        
+        # Остаток на начало дня = предыдущий конец дня
+        daily['balance_start'] = daily['balance_end'].shift(1).fillna(0)
+
         # Красивая таблица
-        daily_display = daily.copy()
-        daily_display = daily_display.rename(columns={
-            'day': 'Дата',
-            'cash_sales': 'Продажи наличкой',
-            'inflow': 'Приходы (взносы, платежи)',
-            'outflow': 'Расходы / Изъятия',
-            'balance_start': 'Остаток на начало дня',
-            'balance': 'Остаток на конец дня'
-        })
-        
-        # Форматирование чисел
-        for col in ['Продажи наличкой', 'Приходы (взносы, платежи)', 'Расходы / Изъятия', 'Остаток на начало дня', 'Остаток на конец дня']:
-            daily_display[col] = daily_display[col].map('{:,.0f}'.format)
-        
-        st.dataframe(daily_display, use_container_width=True, hide_index=True)
+        display = daily[['day', 'balance_start', 'cash_sales', 'inflow', 'outflow', 'balance_end']].copy()
+        display.columns = [
+            'Дата',
+            'Остаток на начало дня',
+            'Продажи наличкой',
+            'Приходы (взносы, платежи)',
+            'Расходы / Изъятия',
+            'Остаток на конец дня'
+        ]
+
+        # Форматирование
+        for col in display.columns[1:]:
+            display[col] = display[col].map('{:,.0f}'.format)
+
+        st.dataframe(display, use_container_width=True, hide_index=True)
+
+        # Проверка
+        last_end = daily['balance_end'].iloc[-1]
+        st.caption(f"Последний остаток в таблице: **{last_end:,.0f} сом** | Текущий остаток кассы: **{current_cash_in_hand:,.0f} сом**")
     else:
-        st.info("Пока нет операций.")
-    # =====================================================================
+        st.info("Пока нет операций для расчёта.")
 
+    # ==================== ИСТОРИЯ ОПЕРАЦИЙ ====================
     st.markdown("---")
-    st.subheader("📜 История операций")
+    st.subheader("📜 История кассовых операций")
 
-    # (фильтр, таблица, удаление, новая операция — как было раньше)
-    # Чтобы не делать сообщение слишком длинным, оставь как в предыдущей версии. Если нужно — скажи, дам полный код.
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        start_date = st.date_input("Начало периода", value=datetime.now().date() - timedelta(days=30))
+    with col_f2:
+        end_date = st.date_input("Конец периода", value=datetime.now().date())
 
-    # Новая операция (только расходы)
+    df_ops = pd.DataFrame(ops_data) if ops_data else pd.DataFrame()
+    if not df_ops.empty:
+        try:
+            df_ops['date_obj'] = pd.to_datetime(df_ops['date'].astype(str).str[:10], format='%Y-%m-%d', errors='coerce').dt.date
+            filtered_ops = df_ops[(df_ops['date_obj'] >= start_date) & (df_ops['date_obj'] <= end_date)].copy()
+        except:
+            filtered_ops = df_ops
+    else:
+        filtered_ops = pd.DataFrame()
+
+    if not filtered_ops.empty:
+        display_df = filtered_ops[["id", "date", "amount", "comment", "created_at"]].copy()
+        display_df["amount"] = display_df["amount"].map('{:,.0f}'.format)
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("Операций за выбранный период нет.")
+
+    # ==================== УДАЛЕНИЕ (Админ) ====================
+    if user_role == "Администратор" and not filtered_ops.empty:
+        st.markdown("---")
+        st.subheader("🗑️ Удалить операцию (только Администратор)")
+
+        with st.form("delete_form"):
+            options = {
+                f"{row['id']} | {row['date']} | {int(row['amount']):,} сом | {row.get('comment', '')}": row['id']
+                for _, row in filtered_ops.iterrows()
+            }
+            selected_label = st.selectbox("Выберите операцию", list(options.keys()))
+            selected_id = options[selected_label]
+            confirm = st.checkbox("Подтверждаю удаление")
+
+            if st.form_submit_button("Удалить операцию", type="primary"):
+                if confirm:
+                    supabase.table("cash_operations").delete().eq("id", selected_id).execute()
+                    st.success("Операция удалена!")
+                    st.rerun()
+                else:
+                    st.warning("Поставьте галочку подтверждения")
+
+    # ==================== НОВАЯ ОПЕРАЦИЯ ====================
     st.markdown("---")
     st.subheader("📤 Новая операция (только расходы / изъятия)")
 
