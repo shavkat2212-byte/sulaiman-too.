@@ -1,10 +1,25 @@
 # Магазин «Сулайман-Тоо» — Модуль: Касса
-# Версия: 2.7 (Исправлен расчёт остатка по дням)
+# Версия: 2.8 (исправлена сортировка дат)
 
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 from database import supabase
+
+def normalize_date(date_str):
+    """Приводит любую дату к формату YYYY-MM-DD"""
+    if not date_str:
+        return None
+    date_str = str(date_str).strip()[:10]
+    
+    # Пробуем разные форматы
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d-%m-%Y", "%Y.%m.%d"):
+        try:
+            return datetime.strptime(date_str, fmt).strftime("%Y-%m-%d")
+        except:
+            continue
+    return None
+
 
 def show_cash_page():
     st.header("💵 Состояние кассы магазина")
@@ -36,13 +51,13 @@ def show_cash_page():
     st.markdown("---")
     st.subheader("📊 Остаток кассы по дням")
 
-    # ==================== ПРАВИЛЬНЫЙ РАСЧЁТ ПО ДНЯМ ====================
+    # ==================== РАСЧЁТ ПО ДНЯМ ====================
     all_ops = []
 
     # 1. Наличные продажи
     for s in sales_data:
         if s.get("payment") == "Наличные":
-            day = str(s.get("day", ""))[:10]
+            day = normalize_date(s.get("day"))
             if day:
                 all_ops.append({
                     "day": day,
@@ -53,7 +68,7 @@ def show_cash_page():
 
     # 2. Операции из cash_operations
     for op in ops_data:
-        day = str(op.get("date", ""))[:10]
+        day = normalize_date(op.get("date"))
         if not day:
             continue
         amount = float(op.get("amount", 0))
@@ -61,29 +76,29 @@ def show_cash_page():
             "day": day,
             "cash_sales": 0.0,
             "inflow": amount if amount > 0 else 0.0,
-            "outflow": -amount if amount < 0 else 0.0   # делаем положительным для отображения
+            "outflow": -amount if amount < 0 else 0.0
         })
 
     if all_ops:
         df_all = pd.DataFrame(all_ops)
         
-        # Группируем по дням
+        # Группируем
         daily = df_all.groupby('day').agg({
             'cash_sales': 'sum',
             'inflow': 'sum',
             'outflow': 'sum'
-        }).reset_index().sort_values('day')
+        }).reset_index()
 
-        # Чистый результат за день
+        # Сортируем правильно по дате
+        daily['day_dt'] = pd.to_datetime(daily['day'])
+        daily = daily.sort_values('day_dt')
+
+        # Расчёт остатков
         daily['net'] = daily['cash_sales'] + daily['inflow'] - daily['outflow']
-        
-        # Остаток на конец дня (кумулятивный)
         daily['balance_end'] = daily['net'].cumsum()
-        
-        # Остаток на начало дня = предыдущий конец дня
         daily['balance_start'] = daily['balance_end'].shift(1).fillna(0)
 
-        # Красивая таблица
+        # Таблица
         display = daily[['day', 'balance_start', 'cash_sales', 'inflow', 'outflow', 'balance_end']].copy()
         display.columns = [
             'Дата',
@@ -94,13 +109,11 @@ def show_cash_page():
             'Остаток на конец дня'
         ]
 
-        # Форматирование
         for col in display.columns[1:]:
             display[col] = display[col].map('{:,.0f}'.format)
 
         st.dataframe(display, use_container_width=True, hide_index=True)
 
-        # Проверка
         last_end = daily['balance_end'].iloc[-1]
         st.caption(f"Последний остаток в таблице: **{last_end:,.0f} сом** | Текущий остаток кассы: **{current_cash_in_hand:,.0f} сом**")
     else:
@@ -119,7 +132,8 @@ def show_cash_page():
     df_ops = pd.DataFrame(ops_data) if ops_data else pd.DataFrame()
     if not df_ops.empty:
         try:
-            df_ops['date_obj'] = pd.to_datetime(df_ops['date'].astype(str).str[:10], format='%Y-%m-%d', errors='coerce').dt.date
+            df_ops['date_norm'] = df_ops['date'].apply(normalize_date)
+            df_ops['date_obj'] = pd.to_datetime(df_ops['date_norm'], errors='coerce').dt.date
             filtered_ops = df_ops[(df_ops['date_obj'] >= start_date) & (df_ops['date_obj'] <= end_date)].copy()
         except:
             filtered_ops = df_ops
@@ -133,7 +147,7 @@ def show_cash_page():
     else:
         st.info("Операций за выбранный период нет.")
 
-    # ==================== УДАЛЕНИЕ (Админ) ====================
+    # ==================== УДАЛЕНИЕ ====================
     if user_role == "Администратор" and not filtered_ops.empty:
         st.markdown("---")
         st.subheader("🗑️ Удалить операцию (только Администратор)")
