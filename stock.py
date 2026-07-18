@@ -113,34 +113,80 @@ def show_stock_page():
     st.markdown("---")
 
     # ==================== ЗАГРУЗКА ИЗ EXCEL ====================
-    st.subheader("📥 Загрузка товаров из Excel")
+   st.subheader("📥 Загрузка товаров из Excel")
     uploaded = st.file_uploader("Выберите файл Excel", type=["xlsx", "xls", "csv"])
 
-    if uploaded:
+    if uploaded is not None:
         try:
             if uploaded.name.endswith(".csv"):
                 upload_df = pd.read_csv(uploaded)
             else:
                 upload_df = pd.read_excel(uploaded)
 
-            st.write("Предпросмотр:")
-            st.dataframe(upload_df.head())
+            st.write("Найденные столбцы в файле:", list(upload_df.columns))
+            st.write("Предпросмотр первых строк:")
+            st.dataframe(upload_df.head(10))
 
-            if st.button("Загрузить на склад"):
-                for _, row in upload_df.iterrows():
-                    supabase.table("products").insert({
-                        "name": str(row.get("name") or row.get("Товар") or "").lower().strip(),
-                        "qty": int(row.get("qty") or row.get("Количество") or 0),
-                        "cost": float(row.get("cost") or row.get("Закупка") or 0),
-                        "price": float(row.get("price") or row.get("Продажа") or 0),
-                        "date": datetime.now().strftime("%Y-%m-%d")
-                    }).execute()
-                st.success("Товары успешно загружены!")
-                st.rerun()
+            # Пробуем понять названия столбцов
+            col_map = {}
+            for col in upload_df.columns:
+                col_lower = str(col).lower().strip()
+                if col_lower in ["name", "товар", "название", "наименование"]:
+                    col_map["name"] = col
+                elif col_lower in ["qty", "количество", "кол-во", "кол", "шт"]:
+                    col_map["qty"] = col
+                elif col_lower in ["cost", "закупка", "цена закупки", "себестоимость"]:
+                    col_map["cost"] = col
+                elif col_lower in ["price", "продажа", "цена продажи", "розница"]:
+                    col_map["price"] = col
+
+            st.write("Сопоставленные столбцы:", col_map)
+
+            if "name" not in col_map:
+                st.error("Не найден столбец с названием товара. Переименуй столбец в «Товар» или «name»")
+            else:
+                if st.button("Загрузить на склад", type="primary"):
+                    success_count = 0
+                    error_count = 0
+                    errors = []
+
+                    for index, row in upload_df.iterrows():
+                        try:
+                            name = str(row[col_map["name"]]).strip().lower()
+                            if not name or name == "nan":
+                                continue
+
+                            qty = int(float(row[col_map.get("qty", 0)] or 0))
+                            cost = float(row[col_map.get("cost", 0)] or 0)
+                            price = float(row[col_map.get("price", 0)] or 0)
+
+                            if qty <= 0:
+                                continue
+
+                            supabase.table("products").insert({
+                                "name": name,
+                                "qty": qty,
+                                "cost": cost,
+                                "price": price,
+                                "date": datetime.now().strftime("%Y-%m-%d")
+                            }).execute()
+                            success_count += 1
+                        except Exception as e:
+                            error_count += 1
+                            errors.append(f"Строка {index + 2}: {str(e)}")
+
+                    if success_count > 0:
+                        st.success(f"✅ Успешно загружено товаров: {success_count}")
+                    if error_count > 0:
+                        st.error(f"❌ Ошибок: {error_count}")
+                        with st.expander("Показать ошибки"):
+                            for err in errors:
+                                st.write(err)
+                    
+                    st.rerun()
+
         except Exception as e:
-            st.error(f"Ошибка при загрузке: {e}")
-
-    st.markdown("---")
+            st.error(f"Ошибка при чтении файла: {e}")
 
     # ==================== ДОБАВЛЕНИЕ ТОВАРА ВРУЧНУЮ ====================
     st.subheader("➕ Добавить товар вручную")
