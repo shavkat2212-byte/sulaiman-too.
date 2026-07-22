@@ -1,13 +1,12 @@
 # Магазин «Сулайман-Тоо» — Модуль: Отчеты и Аналитика
-# Версия: 1.8.2 (без дашборда, с редактированием)
+# Версия: 1.9 (добавлен Полный отчет + сохранено всё старое)
 
 import streamlit as st
 import pandas as pd
 import io
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from database import supabase
-
 from utils import format_date_to_ddmmyyyy, fix_contract_name_on_fly
 
 def show_reports_page():
@@ -17,6 +16,140 @@ def show_reports_page():
         st.header("📊 Аналитика и история продаж (Панель Администратора)")
     else:
         st.header("📋 Ежедневный отчет по продажам (Панель Кассира)")
+
+    # ============================================================
+    # ==================== ПОЛНЫЙ ОТЧЁТ (НОВОЕ) ==================
+    # ============================================================
+    st.subheader("📋 Полный отчет")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        report_type = st.radio("Тип отчёта", ["За один день", "За период"], horizontal=True, key="full_report_type")
+    
+    if report_type == "За один день":
+        selected_date = st.date_input("Выберите день", value=datetime.now().date(), key="full_report_day")
+        start_date = end_date = selected_date
+    else:
+        date_range = st.date_input(
+            "Выберите период",
+            value=(datetime.now().date() - timedelta(days=7), datetime.now().date()),
+            key="full_report_period"
+        )
+        if isinstance(date_range, tuple) and len(date_range) == 2:
+            start_date, end_date = date_range
+        else:
+            st.warning("Выберите обе даты")
+            start_date = end_date = datetime.now().date()
+
+    try:
+        sales_res = supabase.table("sales").select("*").execute()
+        products_res = supabase.table("products").select("*").execute()
+    except Exception as e:
+        st.error(f"Ошибка загрузки данных: {e}")
+        sales_res = type('obj', (object,), {'data': []})()
+        products_res = type('obj', (object,), {'data': []})()
+
+    sales_data = sales_res.data or []
+    products_data = products_res.data or []
+
+    def normalize_day(d):
+        if not d:
+            return None
+        d = str(d)[:10]
+        for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
+            try:
+                return datetime.strptime(d, fmt).date()
+            except:
+                continue
+        return None
+
+    sales_rows = []
+    for s in sales_data:
+        day = normalize_day(s.get("day") or s.get("date"))
+        if not day or day < start_date or day > end_date:
+            continue
+        payment = s.get("payment", "")
+        total_sale = float(s.get("total_sale", 0) or 0)
+        profit = float(s.get("profit", 0) or 0)
+        sales_rows.append({
+            "day": day,
+            "cash_sale": total_sale if payment == "Наличные" else 0,
+            "credit_sale": total_sale if payment == "Рассрочка" else 0,
+            "cash_profit": profit if payment == "Наличные" else 0,
+            "credit_profit": profit if payment == "Рассрочка" else 0,
+        })
+
+    products_rows = []
+    for p in products_data:
+        day = normalize_day(p.get("date"))
+        if not day or day < start_date or day > end_date:
+            continue
+        products_rows.append({
+            "day": day,
+            "qty_received": int(p.get("qty", 0) or 0),
+            "cost_received": float(p.get("qty", 0) or 0) * float(p.get("cost", 0) or 0)
+        })
+
+    if sales_rows or products_rows:
+        df_sales = pd.DataFrame(sales_rows) if sales_rows else pd.DataFrame(columns=["day","cash_sale","credit_sale","cash_profit","credit_profit"])
+        df_products = pd.DataFrame(products_rows) if products_rows else pd.DataFrame(columns=["day","qty_received","cost_received"])
+
+        sales_daily = df_sales.groupby("day").sum().reset_index() if not df_sales.empty else pd.DataFrame(columns=["day","cash_sale","credit_sale","cash_profit","credit_profit"])
+        products_daily = df_products.groupby("day").sum().reset_index() if not df_products.empty else pd.DataFrame(columns=["day","qty_received","cost_received"])
+
+        report = pd.merge(sales_daily, products_daily, on="day", how="outer").fillna(0)
+        report = report.sort_values("day")
+        report["total_profit"] = report["cash_profit"] + report["credit_profit"]
+
+        display = report.copy()
+        display["day"] = display["day"].astype(str)
+        display = display.rename(columns={
+            "day": "Дата",
+            "cash_sale": "Продажи наличкой",
+            "credit_sale": "Продажи в рассрочку",
+            "qty_received": "Товаров принято (шт)",
+            "cost_received": "Сумма принятых",
+            "cash_profit": "Прибыль наличные",
+            "credit_profit": "Прибыль рассрочка",
+            "total_profit": "Общая прибыль"
+        })
+
+        for col in display.columns[1:]:
+            display[col] = display[col].map("{:,.0f}".format)
+
+        st.dataframe(display, use_container_width=True, hide_index=True)
+
+        st.markdown("##### Итоги за выбранный период")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Продажи наличкой", f"{report['cash_sale'].sum():,.0f} сом")
+        c2.metric("Продажи в рассрочку", f"{report['credit_sale'].sum():,.0f} сом")
+        c3.metric("Товаров принято", f"{int(report['qty_received'].sum())} шт.")
+        c4.metric("Общая прибыль", f"{report['total_profit'].sum():,.0f} сом")
+
+        # Экспорт
+        excel_buffer = io.BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+            export_df = report.copy()
+            export_df["day"] = export_df["day"].astype(str)
+            export_df.to_excel(writer, index=False, sheet_name="Полный отчет")
+        excel_buffer.seek(0)
+
+        st.download_button(
+            label="📥 Скачать Полный отчет в Excel",
+            data=excel_buffer,
+            file_name=f"Polnyy_otchet_{start_date}_{end_date}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+    else:
+        st.info("За выбранный период данных для Полного отчета нет.")
+
+    st.markdown("---")
+    st.markdown("---")
+
+    # ============================================================
+    # ==================== СТАРЫЙ РАЗДЕЛ (без изменений) =========
+    # ============================================================
 
     sales_all = supabase.table("sales").select("*").order("date", desc=True).execute()
     if not sales_all.data:
@@ -36,8 +169,8 @@ def show_reports_page():
     df['day_obj'] = df['day'].apply(parse_day_for_filter)
     
     if user_role == "Администратор":
-        st.subheader("🔍 Выберите период для анализа")
-        date_range = st.date_input("Диапазон дат", value=(df['day_obj'].min(), df['day_obj'].max()))
+        st.subheader("🔍 Выберите период для анализа (история продаж)")
+        date_range = st.date_input("Диапазон дат", value=(df['day_obj'].min(), df['day_obj'].max()), key="old_report_range")
         if isinstance(date_range, tuple) and len(date_range) == 2:
             start_date, end_date = date_range
             filtered_df = df[(df['day_obj'] >= start_date) & (df['day_obj'] <= end_date)]
@@ -85,7 +218,6 @@ def show_reports_page():
         st.markdown("---")
         st.subheader("📋 Список оформленных чеков")
 
-        # Экспорт
         if user_role == "Администратор":
             col_btn1, col_btn2 = st.columns([5, 2])
             with col_btn2:
@@ -113,7 +245,6 @@ def show_reports_page():
                     use_container_width=True
                 )
 
-        # Таблица
         report_display = []
         for _, row in filtered_df.iterrows():
             fixed_name = fix_contract_name_on_fly(row['name'], row['date'])
