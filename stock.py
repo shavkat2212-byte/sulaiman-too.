@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Склад
-# Версия: 1.7 (все функции + инвентаризация + исправленная загрузка Excel)
+# Версия: 1.9 (редактирование только для Админа + дата поступления)
 
 import streamlit as st
 import pandas as pd
@@ -10,10 +10,12 @@ from database import supabase
 def show_stock_page():
     st.header("Управление складом")
 
-    # ==================== ЗАГРУЗКА ДАННЫХ ====================
+    user_role = st.session_state.get("user", {}).get("role", "Кассир")
+
+    # ===== ЗАГРУЗКА ДАННЫХ =====
     try:
         response = supabase.table("products").select("*").order("name").execute()
-        data = response.data
+        data = response.data or []
     except Exception as e:
         st.error(f"Ошибка загрузки: {e}")
         return
@@ -26,25 +28,25 @@ def show_stock_page():
     total_cost = round((df_active["qty"] * df_active["cost"]).sum(), 2) if not df_active.empty else 0
     total_retail = round((df_active["qty"] * df_active["price"]).sum(), 2) if not df_active.empty else 0
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("📦 Всего товаров", f"{total_qty} шт.")
-    col2.metric("💰 Сумма в закупке", f"{total_cost:,.2f} сом")
-    col3.metric("📈 Розничная стоимость", f"{total_retail:,.2f} сом")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("📦 Всего товаров", f"{total_qty} шт.")
+    c2.metric("💰 Сумма в закупке", f"{total_cost:,.2f} сом")
+    c3.metric("📈 Розничная стоимость", f"{total_retail:,.2f} сом")
 
     st.markdown("---")
 
-    # ==================== ТАБЛИЦА ====================
+    # ===== СПИСОК ТОВАРОВ =====
     st.subheader("Список товаров на складе")
     if not df_active.empty:
-        display_df = df_active[["name", "date", "qty", "cost", "price"]].copy()
-        display_df.columns = ["Товар", "Дата поступления", "В наличии", "Закупка", "Продажа"]
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        display = df_active[["name", "date", "qty", "cost", "price"]].copy()
+        display.columns = ["Товар", "Дата поступления", "В наличии", "Закупка", "Продажа"]
+        st.dataframe(display, use_container_width=True, hide_index=True)
     else:
         st.info("На складе пока нет товаров.")
 
     st.markdown("---")
 
-    # ==================== ИНВЕНТАРИЗАЦИЯ ====================
+    # ===== ИНВЕНТАРИЗАЦИЯ =====
     st.subheader("📋 Инвентаризация")
 
     if "inventory_mode" not in st.session_state:
@@ -54,7 +56,7 @@ def show_stock_page():
         st.session_state["inventory_mode"] = True
 
     if st.session_state["inventory_mode"] and not df_active.empty:
-        st.info("Отметьте галочками товары, которые физически есть на складе")
+        st.info("Отметьте галочками товары, которые физически есть")
 
         inv_df = df_active[["name", "qty", "cost", "price"]].copy()
         inv_df["Сумма закупки"] = inv_df["qty"] * inv_df["cost"]
@@ -81,13 +83,7 @@ def show_stock_page():
         missing = len(edited) - present
         total_sum = edited["Сумма закупки"].sum()
 
-        st.markdown(f"""
-        **Итого:**
-        - Всего позиций: **{len(edited)}**
-        - Есть: **{present}**
-        - Нет: **{missing}**
-        - Сумма закупки: **{total_sum:,.2f} сом**
-        """)
+        st.markdown(f"**Итого:** Всего {len(edited)} | Есть: {present} | Нет: {missing} | Сумма: {total_sum:,.0f} сом")
 
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -99,7 +95,7 @@ def show_stock_page():
         st.download_button(
             "📥 Скачать отчёт в Excel",
             data=buffer,
-            file_name=f"Инвентаризация_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.xlsx",
+            file_name=f"Inventarizaciya_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
@@ -109,9 +105,9 @@ def show_stock_page():
 
     st.markdown("---")
 
-    # ==================== ЗАГРУЗКА ИЗ EXCEL ====================
+    # ===== ЗАГРУЗКА ИЗ EXCEL =====
     st.subheader("📥 Загрузка товаров из Excel")
-    uploaded = st.file_uploader("Выберите файл Excel", type=["xlsx", "xls", "csv"])
+    uploaded = st.file_uploader("Выберите файл", type=["xlsx", "xls", "csv"])
 
     if uploaded is not None:
         try:
@@ -120,43 +116,37 @@ def show_stock_page():
             else:
                 upload_df = pd.read_excel(uploaded)
 
-            st.write("Найденные столбцы:", list(upload_df.columns))
-            st.dataframe(upload_df.head(8))
+            st.write("Столбцы в файле:", list(upload_df.columns))
+            st.dataframe(upload_df.head(5))
 
             col_map = {}
             for col in upload_df.columns:
-                col_lower = str(col).lower().strip()
-                if col_lower in ["name", "товар", "название", "наименование"]:
+                cl = str(col).lower().strip()
+                if cl in ["name", "товар", "название", "наименование"]:
                     col_map["name"] = col
-                elif col_lower in ["qty", "количество", "кол-во", "кол", "шт"]:
+                elif cl in ["qty", "количество", "кол-во", "кол", "шт"]:
                     col_map["qty"] = col
-                elif col_lower in ["cost", "закупка", "цена закупки", "себестоимость"]:
+                elif cl in ["cost", "закупка", "цена закупки", "себестоимость"]:
                     col_map["cost"] = col
-                elif col_lower in ["price", "продажа", "цена продажи", "розница"]:
+                elif cl in ["price", "продажа", "цена продажи", "розница"]:
                     col_map["price"] = col
-
-            st.write("Сопоставленные столбцы:", col_map)
 
             if "name" not in col_map:
                 st.error("Не найден столбец с названием товара")
             else:
                 if st.button("Загрузить на склад", type="primary"):
-                    success_count = 0
-                    error_list = []
-
-                    for index, row in upload_df.iterrows():
+                    success = 0
+                    errors = []
+                    for idx, row in upload_df.iterrows():
                         try:
                             name = str(row[col_map["name"]]).strip().lower()
                             if not name or name == "nan":
                                 continue
-
                             qty = int(float(row.get(col_map.get("qty"), 0) or 0))
                             cost = float(row.get(col_map.get("cost"), 0) or 0)
                             price = float(row.get(col_map.get("price"), 0) or 0)
-
                             if qty <= 0:
                                 continue
-
                             supabase.table("products").insert({
                                 "name": name,
                                 "qty": qty,
@@ -164,27 +154,23 @@ def show_stock_page():
                                 "price": price,
                                 "date": datetime.now().strftime("%Y-%m-%d")
                             }).execute()
-                            success_count += 1
+                            success += 1
                         except Exception as e:
-                            error_list.append(f"Строка {index+2}: {e}")
-
-                    if success_count > 0:
-                        st.success(f"✅ Успешно загружено: {success_count} товаров")
-                    if error_list:
-                        st.error(f"Ошибок: {len(error_list)}")
-                        with st.expander("Подробности ошибок"):
-                            for err in error_list:
-                                st.write(err)
+                            errors.append(f"Строка {idx+2}: {e}")
+                    if success:
+                        st.success(f"✅ Загружено: {success} товаров")
+                    if errors:
+                        st.error(f"Ошибок: {len(errors)}")
                     st.rerun()
         except Exception as e:
             st.error(f"Ошибка чтения файла: {e}")
 
     st.markdown("---")
 
-    # ==================== ДОБАВЛЕНИЕ ВРУЧНУЮ ====================
+    # ===== ДОБАВЛЕНИЕ ВРУЧНУЮ =====
     st.subheader("➕ Добавить товар вручную")
 
-    with st.form("add_product_form", clear_on_submit=True):
+    with st.form("add_form", clear_on_submit=True):
         name = st.text_input("Название товара")
         qty = st.number_input("Количество", min_value=1, value=1)
         cost = st.number_input("Цена закупки", min_value=0.0, value=0.0)
@@ -202,8 +188,61 @@ def show_stock_page():
                 st.success(f"Товар «{name}» добавлен!")
                 st.rerun()
             else:
-                st.warning("Введите название товара")
+                st.warning("Введите название")
 
     st.markdown("---")
 
-    # ==================== РЕДАКТИРОВАНИЕ ====================
+    # ===== РЕДАКТИРОВАНИЕ / УДАЛЕНИЕ (только Админ) =====
+    if user_role == "Администратор":
+        st.subheader("✏️ Редактировать / Удалить товар")
+
+        if not df.empty:
+            options = {
+                f"{row['name']} | {int(row['qty'])} шт. | закупка {row['cost']} | {row['date']}": row["id"]
+                for _, row in df.iterrows()
+            }
+            selected = st.selectbox("Выберите товар", ["-- Не выбрано --"] + list(options.keys()))
+
+            if selected != "-- Не выбрано --":
+                product_id = options[selected]
+                product = next((p for p in data if p["id"] == product_id), None)
+
+                if product:
+                    with st.form("edit_product_form"):
+                        new_name = st.text_input("Название", value=product["name"])
+                        new_qty = st.number_input("Количество", min_value=0, value=int(product["qty"]))
+                        new_cost = st.number_input("Цена закупки", value=float(product["cost"]))
+                        new_price = st.number_input("Цена продажи", value=float(product["price"]))
+
+                        # Дата поступления
+                        try:
+                            current_date = datetime.strptime(str(product["date"])[:10], "%Y-%m-%d").date()
+                        except:
+                            try:
+                                current_date = datetime.strptime(str(product["date"])[:10], "%d.%m.%Y").date()
+                            except:
+                                current_date = datetime.now().date()
+
+                        new_date = st.date_input("Дата поступления (партия)", value=current_date)
+
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.form_submit_button("💾 Сохранить изменения", type="primary"):
+                                supabase.table("products").update({
+                                    "name": new_name.strip().lower(),
+                                    "qty": new_qty,
+                                    "cost": new_cost,
+                                    "price": new_price,
+                                    "date": new_date.strftime("%Y-%m-%d")
+                                }).eq("id", product_id).execute()
+                                st.success("Изменения сохранены!")
+                                st.rerun()
+                        with col2:
+                            if st.form_submit_button("🗑️ Удалить товар"):
+                                supabase.table("products").delete().eq("id", product_id).execute()
+                                st.success("Товар удалён!")
+                                st.rerun()
+        else:
+            st.info("Нет товаров для редактирования")
+    else:
+        st.info("Редактирование товаров доступно только Администратору")
