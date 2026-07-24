@@ -283,3 +283,74 @@ def show_clients_page():
                                     st.rerun()
                     else:
                         st.info("Календарный график для этого клиента отсутствует.")
+            # ===== ГЕНЕРАЦИЯ ДОГОВОРА =====
+st.markdown("---")
+st.subheader("📄 Сформировать договор")
+
+if chosen_cl_sales:
+    # Выбираем договор для печати
+    sale_options = {
+        f"{s['date']} | {s['name'][:50]} | {int(s.get('total_sale', 0)):,} сом": s
+        for s in chosen_cl_sales
+    }
+    selected_sale_label = st.selectbox(
+        "Выберите договор для печати",
+        list(sale_options.keys()),
+        key="contract_sale_select"
+    )
+    selected_sale = sale_options[selected_sale_label]
+
+    # Данные клиента
+    client_data = next((c for c in c_all.data if c["id"] == chosen_client_id), {})
+
+    # Количество месяцев (пробуем взять из платежей)
+    client_payments = [p for p in all_payments if p.get("sale_id") == selected_sale["id"]]
+    months_count = len(client_payments) if client_payments else 6
+
+    col_btn1, col_btn2 = st.columns(2)
+    with col_btn1:
+        if st.button("📄 Скачать договор (Word)", type="primary", use_container_width=True):
+            try:
+                from contract_generator import fill_contract, generate_payment_schedule
+                import os
+
+                template_path = "contract_template.docx"
+                if not os.path.exists(template_path):
+                    st.error("Файл шаблона contract_template.docx не найден!")
+                else:
+                    # Номер договора — используем ID продажи
+                    contract_num = str(selected_sale.get("id", "б/н"))
+                    contract_date = datetime.now().strftime("%d.%m.%Y")
+
+                    total = float(selected_sale.get("total_sale", 0) or 0)
+                    down = float(selected_sale.get("down_payment", 0) or 0)
+                    product_name = selected_sale.get("name", "Товар")
+
+                    schedule = generate_payment_schedule(total, down, months_count)
+
+                    doc_bytes = fill_contract(
+                        template_path=template_path,
+                        contract_number=contract_num,
+                        contract_date=contract_date,
+                        client_name=client_data.get("fio", ""),
+                        client_address=client_data.get("address", ""),
+                        client_passport=client_data.get("passport", ""),
+                        total_amount=total,
+                        months=months_count,
+                        product_name=product_name,
+                        product_qty=int(selected_sale.get("qty", 1) or 1),
+                        product_price=total,
+                        down_payment=down,
+                        schedule=schedule,
+                    )
+
+                    st.download_button(
+                        label="⬇️ Нажмите, чтобы скачать договор",
+                        data=doc_bytes,
+                        file_name=f"Dogovor_{contract_num}_{client_data.get('fio', 'client')}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        use_container_width=True
+                    )
+                    st.success("Договор сформирован!")
+            except Exception as e:
+                st.error(f"Ошибка при создании договора: {e}")
