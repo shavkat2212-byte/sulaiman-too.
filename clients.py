@@ -249,7 +249,7 @@ def show_clients_page():
 
             st.markdown("---")
 
-            # --- 2. Пересчитать график ---
+                      # --- 2. Пересчитать график ---
             st.markdown("##### 2. Разбить / пересчитать график платежей")
             current_payments = [p for p in all_payments if p.get("sale_id") == selected_sale["id"]]
             current_months = len(current_payments) if current_payments else 1
@@ -263,9 +263,12 @@ def show_clients_page():
 
             total = float(selected_sale.get("total_sale", 0) or 0)
             down = float(selected_sale.get("down_payment", 0) or 0)
-            remaining = max(0, total - down)
+            
+            # Берём сумму с наценкой, если она есть
+            credit_balance = float(selected_sale.get("credit_balance", 0) or 0)
+            remaining = credit_balance if credit_balance > 0 else max(0, total - down)
 
-            st.info(f"Сумма договора: **{total:,.0f}** | Первоначальный взнос: **{down:,.0f}** | К рассрочке: **{remaining:,.0f}**")
+            st.info(f"Сумма договора: **{total:,.0f}** | Первоначальный взнос: **{down:,.0f}** | К рассрочке (с наценкой): **{remaining:,.0f}**")
 
             if st.button("📅 Пересоздать график платежей", type="primary"):
                 try:
@@ -280,22 +283,26 @@ def show_clients_page():
 
                     for i in range(1, new_months + 1):
                         due = start + timedelta(days=30 * i)
+                        
                         if i == new_months:
                             amount = round(balance, 2)
                         else:
                             amount = monthly
                             balance = round(balance - monthly, 2)
 
+                        # ВАЖНО: дата в формате YYYY-MM-DD
+                        due_str = due.strftime("%Y-%m-%d")
+
                         supabase.table("credit_payments").insert({
                             "sale_id": selected_sale["id"],
                             "client_id": selected_sale["client_id"],
-                            "due_date": due.strftime("%d.%m.%Y"),
+                            "due_date": due_str,
                             "amount_expected": amount,
                             "amount_paid": 0,
-                            "status": "Ожидается"
+                            "status": "Не оплачен"
                         }).execute()
 
-                    st.success(f"График пересоздан на {new_months} месяцев!")
+                    st.success(f"✅ График пересоздан на {new_months} месяцев!")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Ошибка при пересчёте: {e}")
