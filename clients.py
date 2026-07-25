@@ -307,7 +307,7 @@ def show_clients_page():
                 except Exception as e:
                     st.error(f"Ошибка при пересчёте: {e}")
 
-        # =================================================
+                # =================================================
         # ГЕНЕРАЦИЯ ДОГОВОРА
         # =================================================
         st.markdown("---")
@@ -336,10 +336,19 @@ def show_clients_page():
                 else:
                     contract_num = str(selected_sale2.get("id", "б/н"))
                     contract_date = datetime.now().strftime("%d.%m.%Y")
-                    total = float(selected_sale2.get("total_sale", 0) or 0)
+
+                    # ===== ИСПРАВЛЕНИЕ: берём сумму С НАЦЕНКОЙ =====
                     down = float(selected_sale2.get("down_payment", 0) or 0)
+                    credit_balance = float(selected_sale2.get("credit_balance", 0) or 0)
+                    total_sale = float(selected_sale2.get("total_sale", 0) or 0)
+
+                    # Полная сумма, которую клиент должен заплатить
+                    total_with_markup = down + credit_balance if credit_balance > 0 else total_sale
+
                     product_name = selected_sale2.get("name", "Товар")
-                    schedule = generate_payment_schedule(total, down, months_count)
+                    
+                    # График строим от суммы с наценкой
+                    schedule = generate_payment_schedule(total_with_markup, down, months_count)
 
                     doc_bytes = fill_contract(
                         template_path=template_path,
@@ -348,11 +357,11 @@ def show_clients_page():
                         client_name=client_data.get("fio", ""),
                         client_address=client_data.get("address", "") or "—",
                         client_passport=client_data.get("passport", "") or "—",
-                        total_amount=total,
+                        total_amount=total_with_markup,          # ← сумма с наценкой
                         months=months_count,
                         product_name=product_name,
                         product_qty=int(selected_sale2.get("qty", 1) or 1),
-                        product_price=total,
+                        product_price=total_with_markup,         # ← тоже с наценкой
                         down_payment=down,
                         schedule=schedule,
                     )
