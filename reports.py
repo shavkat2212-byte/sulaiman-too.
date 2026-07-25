@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Отчеты
-# Версия: 2.1 (полное редактирование + отмена + Полный отчет)
+# Версия: 2.2 (умная отмена продажи с возвратом на склад)
 
 import streamlit as st
 import pandas as pd
@@ -30,6 +30,7 @@ def show_reports_page():
 
     df = pd.DataFrame(sales_all.data)
     products_data = products_all.data or []
+    all_sales_list = sales_all.data or []
 
     def parse_day(x):
         try:
@@ -167,12 +168,15 @@ def show_reports_page():
             "Прибыль": int(row.get('profit', 0)),
             "sale_id": row['id'],
             "raw_payment": row['payment'],
-            "down_payment": int(row.get('down_payment', 0) or 0)
+            "down_payment": int(row.get('down_payment', 0) or 0),
+            "pure_name": row.get('pure_name', ''),
+            "batch_date": row.get('batch_date', ''),
+            "qty_raw": int(row.get('qty', 0))
         }
         report_display.append(item)
 
     df_display = pd.DataFrame(report_display)
-    st.dataframe(df_display.drop(columns=["sale_id", "raw_payment", "down_payment"], errors="ignore"),
+    st.dataframe(df_display.drop(columns=["sale_id", "raw_payment", "down_payment", "pure_name", "batch_date", "qty_raw"], errors="ignore"),
                  use_container_width=True, hide_index=True)
 
     # ===== РЕДАКТИРОВАНИЕ =====
@@ -184,7 +188,7 @@ def show_reports_page():
             f"{row['Дата']} | {row['Наименование']} | {row['Сумма']} сом": row
             for _, row in df_display.iterrows()
         }
-        selected_label = st.selectbox("Выберите операцию", ["-- Не выбрано --"] + list(edit_options.keys()))
+        selected_label = st.selectbox("Выберите операцию", ["-- Не выбрано --"] + list(edit_options.keys()), key="edit_select")
 
         if selected_label != "-- Не выбрано --":
             selected = edit_options[selected_label]
@@ -227,29 +231,169 @@ def show_reports_page():
                         except Exception as e:
                             st.error(f"Ошибка: {e}")
 
-    # ===== ОТМЕНА =====
+    # ===== УМНАЯ ОТМЕНА ПРОДАЖИ =====
     if user_role == "Администратор":
         st.markdown("---")
-        st.subheader("🗑️ Отменить (удалить) продажу")
+        st.subheader("🔄 Умная отмена продажи (с возвратом на склад)")
 
         cancel_options = {
-            f"{row['Дата']} | {row['Наименование']} | {row['Сумма']} сом": row
+            f"{row['Дата']} | {row['Наименование']} | {row['Сумма']} сом | {row['Тип оплаты']}": row
             for _, row in df_display.iterrows()
         }
-        selected_cancel = st.selectbox("Выберите операцию для удаления", ["-- Не выбрано --"] + list(cancel_options.keys()), key="cancel_select")
+        selected_cancel = st.selectbox(
+            "Выберите продажу для отмены",
+            ["-- Не выбрано --"] + list(cancel_options.keys()),
+            key="smart_cancel_select"
+        )
 
         if selected_cancel != "-- Не выбрано --":
             s_del = cancel_options[selected_cancel]
-            if st.button("🚨 БЕЗВОЗВРАТНО УДАЛИТЬ эту продажу", type="primary"):
+            sale_id = s_del["sale_id"]
+            payment_type = s_del["raw_payment"]
+
+            # === Находим связанные записи (для чеков с несколькими товарами) ===
+            related_sales = []
+            if payment_type == "Наличные" and "_" in str(sale_id):
+                base_id = str(sale_id).rsplit("_", 1)[0]
+                related_sales = [s for s in all_sales_list if str(s.get("id", "")).startswith(base_id)]
+            else:
+                related_sales = [s for s in all_sales_list if str(s.get("id")) == str(sale_id)]
+
+            if not related_sales:
+                related_sales = [next((s for s in all_sales_list if str(s.get("id")) == str(sale_id)), None)]
+                related_sales = [s for s in related_sales if s]
+
+            # === Предпросмотр возврата ===
+            st.markdown("#### 📋 Что будет сделано при отмене:")
+
+            restore_preview = []
+            total_restore_qty = 0
+
+            if payment_type == "Наличные":
+                for s in related_sales:
+                    pure = str(s.get("pure_name", "") or "").lower().strip()
+                    batch_d = str(s.get("batch_date", "") or "")[:10]
+                    qty = int(s.get("qty", 0) or 0)
+                    name_display = s.get("name", pure)
+
+                    # Ищем партию
+                    matching = [
+                        p for p in products_data
+                        if str(p.get("name", "")).lower().strip() == pure
+                        and str(p.get("date", ""))[:10] == batch_d
+                    ]
+
+                    if matching:
+                        p = matching[0]
+                        restore_preview.append({
+                            "Товар": name_display,
+                            "Партия": batch_d,
+                            "Вернуть шт.": qty,
+                            "Текущий остаток": int(p.get("qty", 0)),
+                            "Станет": int(p.get("qty", 0)) + qty,
+                            "product_id": p["id"]
+                        })
+                    else:
+                        # Ищем просто по имени (берём первую подходящую)
+                        matching_any = [
+                            p for p in products_data
+                            if str(p.get("name", "")).lower().strip() == pure
+                        ]
+                        if matching_any:
+                            p = matching_any[0]
+                            restore_preview.append({
+                                "Товар": name_display,
+                                "Партия": "(найдена другая)",
+                                "Вернуть шт.": qty,
+                                "Текущий остаток": int(p.get("qty", 0)),
+                                "Станет": int(p.get("qty", 0)) + qty,
+                                "product_id": p["id"]
+                            })
+                        else:
+                            restore_preview.append({
+                                "Товар": name_display,
+                                "Партия": batch_d or "—",
+                                "Вернуть шт.": qty,
+                                "Текущий остаток": "не найден",
+                                "Станет": "нужно добавить вручную",
+                                "product_id": None
+                            })
+                    total_restore_qty += qty
+
+                if restore_preview:
+                    st.dataframe(pd.DataFrame(restore_preview).drop(columns=["product_id"], errors="ignore"),
+                                 use_container_width=True, hide_index=True)
+                    st.success(f"Будет возвращено на склад: **{total_restore_qty} шт.** товаров")
+                else:
+                    st.warning("Не удалось определить товары для возврата.")
+
+            else:  # Рассрочка
+                st.info("Это договор рассрочки.")
+                st.write(f"• Будут удалены все платежи по договору")
+                down = int(s_del.get("down_payment", 0) or 0)
+                if down > 0:
+                    st.write(f"• Будет откатан первоначальный взнос **{down:,} сом** из кассы (если найдётся)")
+                st.warning("⚠️ Товар по рассрочке нужно будет вернуть на склад **вручную** (детализация позиций не сохранялась).")
+
+            st.markdown("---")
+            confirm = st.checkbox("Я понимаю последствия и подтверждаю отмену", key="confirm_smart_cancel")
+
+            if st.button("🚨 ОТМЕНИТЬ ПРОДАЖУ И ВЕРНУТЬ ТОВАР", type="primary", disabled=not confirm):
                 try:
-                    # Возвращаем товар на склад (упрощённо)
-                    if s_del["raw_payment"] == "Наличные":
-                        # Пытаемся вернуть количество
-                        pass  # можно доработать позже
-                    
-                    supabase.table("sales").delete().eq("id", s_del["sale_id"]).execute()
-                    supabase.table("credit_payments").delete().eq("sale_id", s_del["sale_id"]).execute()
-                    st.success("Продажа удалена!")
+                    errors = []
+
+                    # 1. Возврат на склад (только для наличных)
+                    if payment_type == "Наличные":
+                        for item in restore_preview:
+                            pid = item.get("product_id")
+                            qty = item.get("Вернуть шт.", 0)
+                            if pid and isinstance(qty, int) and qty > 0:
+                                try:
+                                    # Получаем актуальное количество
+                                    cur = supabase.table("products").select("qty").eq("id", pid).execute()
+                                    if cur.data:
+                                        new_qty = int(cur.data[0]["qty"]) + qty
+                                        supabase.table("products").update({"qty": new_qty}).eq("id", pid).execute()
+                                except Exception as e:
+                                    errors.append(f"Ошибка возврата товара: {e}")
+
+                    # 2. Удаляем связанные продажи
+                    for s in related_sales:
+                        try:
+                            supabase.table("sales").delete().eq("id", s["id"]).execute()
+                        except Exception as e:
+                            errors.append(f"Ошибка удаления продажи {s.get('id')}: {e}")
+
+                    # 3. Удаляем платежи по рассрочке
+                    try:
+                        supabase.table("credit_payments").delete().eq("sale_id", sale_id).execute()
+                    except Exception as e:
+                        errors.append(f"Ошибка удаления платежей: {e}")
+
+                    # 4. Откат первоначального взноса из кассы
+                    if payment_type == "Рассрочка":
+                        down = float(s_del.get("down_payment", 0) or 0)
+                        if down > 0:
+                            try:
+                                ops_res = supabase.table("cash_operations").select("*").execute()
+                                ops = ops_res.data or []
+                                for op in ops:
+                                    comment = str(op.get("comment", "") or "")
+                                    amount = float(op.get("amount", 0) or 0)
+                                    if ("Перв. взнос" in comment or "перв" in comment.lower()) and abs(amount - down) < 1:
+                                        supabase.table("cash_operations").delete().eq("id", op["id"]).execute()
+                                        st.info(f"Откатан взнос из кассы: {down:,.0f} сом")
+                                        break
+                            except Exception as e:
+                                errors.append(f"Не удалось откатить взнос: {e}")
+
+                    if errors:
+                        for err in errors:
+                            st.error(err)
+                        st.warning("Часть операций выполнена с ошибками. Проверьте склад и кассу.")
+                    else:
+                        st.success("✅ Продажа успешно отменена! Товар возвращён на склад.")
                     st.rerun()
+
                 except Exception as e:
-                    st.error(f"Ошибка удаления: {e}")
+                    st.error(f"Критическая ошибка при отмене: {e}")
