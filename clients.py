@@ -377,3 +377,65 @@ def show_clients_page():
             except Exception as e:
                 st.error(f"Ошибка: {e}")
                 st.exception(e)
+
+    # ===== ЭКСПОРТ ВСЕХ КЛИЕНТОВ С СУММАМИ =====
+    st.markdown("---")
+    st.subheader("📥 Экспорт клиентов в Excel")
+
+    try:
+        clients_res = supabase.table("clients").select("*").order("fio").execute()
+        sales_res = supabase.table("sales").select("*").eq("payment", "Рассрочка").execute()
+        payments_res = supabase.table("credit_payments").select("*").execute()
+
+        clients = clients_res.data or []
+        all_sales = sales_res.data or []
+        all_payments = payments_res.data or []
+
+        export_rows = []
+        for cl in clients:
+            cl_id = cl["id"]
+            cl_sales = [s for s in all_sales if s.get("client_id") == cl_id]
+            
+            total_sale = sum(float(s.get("total_sale", 0) or 0) for s in cl_sales)
+            total_down = sum(float(s.get("down_payment", 0) or 0) for s in cl_sales)
+            total_credit = sum(float(s.get("credit_balance", 0) or 0) for s in cl_sales)
+            
+            cl_payments = [p for p in all_payments if p.get("client_id") == cl_id]
+            already_paid = sum(float(p.get("amount_paid", 0) or 0) for p in cl_payments)
+            
+            remaining_debt = total_credit - already_paid
+
+            export_rows.append({
+                "ID": cl_id,
+                "ФИО": cl.get("fio", ""),
+                "Телефон": cl.get("phone", ""),
+                "Адрес": cl.get("address", ""),
+                "Паспорт": cl.get("passport", ""),
+                "Кол-во договоров": len(cl_sales),
+                "Сумма договоров": int(total_sale),
+                "Первоначальные взносы": int(total_down),
+                "Сумма в рассрочку": int(total_credit),
+                "Уже оплачено": int(already_paid),
+                "Остаток долга": int(max(0, remaining_debt))
+            })
+
+        if export_rows:
+            export_df = pd.DataFrame(export_rows)
+            st.dataframe(export_df, use_container_width=True, hide_index=True)
+
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                export_df.to_excel(writer, index=False, sheet_name="Клиенты")
+            buffer.seek(0)
+
+            st.download_button(
+                "📥 Скачать всех клиентов с суммами (Excel)",
+                data=buffer,
+                file_name=f"Klienti_s_summami_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        else:
+            st.info("Клиентов пока нет.")
+    except Exception as e:
+        st.error(f"Ошибка при формировании экспорта: {e}")
