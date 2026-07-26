@@ -1,8 +1,9 @@
 # Магазин «Сулайман-Тоо» — Модуль: Клиенты и рассрочки
-# Версия: 1.5 (редактирование клиента договора + пересчёт графика)
+# Версия: 1.6 (экспорт клиентов с суммами)
 
 import streamlit as st
 import pandas as pd
+import io
 from datetime import datetime, timedelta
 from database import supabase
 import os
@@ -236,9 +237,7 @@ def show_clients_page():
                 if st.button("🔄 Сменить клиента у этого договора", type="primary"):
                     new_client_id = other_clients[new_client_fio]
                     try:
-                        # Обновляем sale
                         supabase.table("sales").update({"client_id": new_client_id}).eq("id", selected_sale["id"]).execute()
-                        # Обновляем все платежи этого договора
                         supabase.table("credit_payments").update({"client_id": new_client_id}).eq("sale_id", selected_sale["id"]).execute()
                         st.success(f"Договор перепривязан к клиенту: {new_client_fio}")
                         st.rerun()
@@ -249,7 +248,7 @@ def show_clients_page():
 
             st.markdown("---")
 
-                      # --- 2. Пересчитать график ---
+            # --- 2. Пересчитать график ---
             st.markdown("##### 2. Разбить / пересчитать график платежей")
             current_payments = [p for p in all_payments if p.get("sale_id") == selected_sale["id"]]
             current_months = len(current_payments) if current_payments else 1
@@ -263,51 +262,42 @@ def show_clients_page():
 
             total = float(selected_sale.get("total_sale", 0) or 0)
             down = float(selected_sale.get("down_payment", 0) or 0)
-            
-            # Берём сумму с наценкой, если она есть
-            credit_balance = float(selected_sale.get("credit_balance", 0) or 0)
-            remaining = credit_balance if credit_balance > 0 else max(0, total - down)
+            remaining = max(0, total - down)
 
-            st.info(f"Сумма договора: **{total:,.0f}** | Первоначальный взнос: **{down:,.0f}** | К рассрочке (с наценкой): **{remaining:,.0f}**")
+            st.info(f"Сумма договора: **{total:,.0f}** | Первоначальный взнос: **{down:,.0f}** | К рассрочке: **{remaining:,.0f}**")
 
             if st.button("📅 Пересоздать график платежей", type="primary"):
                 try:
-                    # Удаляем старые платежи этого договора
                     for p in current_payments:
                         supabase.table("credit_payments").delete().eq("id", p["id"]).execute()
 
-                    # Создаём новый график
                     monthly = round(remaining / new_months, 2)
                     balance = remaining
                     start = datetime.now()
 
                     for i in range(1, new_months + 1):
                         due = start + timedelta(days=30 * i)
-                        
                         if i == new_months:
                             amount = round(balance, 2)
                         else:
                             amount = monthly
                             balance = round(balance - monthly, 2)
 
-                        # ВАЖНО: дата в формате YYYY-MM-DD
-                        due_str = due.strftime("%Y-%m-%d")
-
                         supabase.table("credit_payments").insert({
                             "sale_id": selected_sale["id"],
                             "client_id": selected_sale["client_id"],
-                            "due_date": due_str,
+                            "due_date": due.strftime("%d.%m.%Y"),
                             "amount_expected": amount,
                             "amount_paid": 0,
-                            "status": "Не оплачен"
+                            "status": "Ожидается"
                         }).execute()
 
-                    st.success(f"✅ График пересоздан на {new_months} месяцев!")
+                    st.success(f"График пересоздан на {new_months} месяцев!")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Ошибка при пересчёте: {e}")
 
-                # =================================================
+        # =================================================
         # ГЕНЕРАЦИЯ ДОГОВОРА
         # =================================================
         st.markdown("---")
@@ -336,19 +326,10 @@ def show_clients_page():
                 else:
                     contract_num = str(selected_sale2.get("id", "б/н"))
                     contract_date = datetime.now().strftime("%d.%m.%Y")
-
-                    # ===== ИСПРАВЛЕНИЕ: берём сумму С НАЦЕНКОЙ =====
+                    total = float(selected_sale2.get("total_sale", 0) or 0)
                     down = float(selected_sale2.get("down_payment", 0) or 0)
-                    credit_balance = float(selected_sale2.get("credit_balance", 0) or 0)
-                    total_sale = float(selected_sale2.get("total_sale", 0) or 0)
-
-                    # Полная сумма, которую клиент должен заплатить
-                    total_with_markup = down + credit_balance if credit_balance > 0 else total_sale
-
                     product_name = selected_sale2.get("name", "Товар")
-                    
-                    # График строим от суммы с наценкой
-                    schedule = generate_payment_schedule(total_with_markup, down, months_count)
+                    schedule = generate_payment_schedule(total, down, months_count)
 
                     doc_bytes = fill_contract(
                         template_path=template_path,
@@ -357,11 +338,11 @@ def show_clients_page():
                         client_name=client_data.get("fio", ""),
                         client_address=client_data.get("address", "") or "—",
                         client_passport=client_data.get("passport", "") or "—",
-                        total_amount=total_with_markup,          # ← сумма с наценкой
+                        total_amount=total,
                         months=months_count,
                         product_name=product_name,
                         product_qty=int(selected_sale2.get("qty", 1) or 1),
-                        product_price=total_with_markup,         # ← тоже с наценкой
+                        product_price=total,
                         down_payment=down,
                         schedule=schedule,
                     )
@@ -378,7 +359,9 @@ def show_clients_page():
                 st.error(f"Ошибка: {e}")
                 st.exception(e)
 
-    # ===== ЭКСПОРТ ВСЕХ КЛИЕНТОВ С СУММАМИ =====
+    # =========================================================================
+    # ЭКСПОРТ ВСЕХ КЛИЕНТОВ С СУММАМИ
+    # =========================================================================
     st.markdown("---")
     st.subheader("📥 Экспорт клиентов в Excel")
 
