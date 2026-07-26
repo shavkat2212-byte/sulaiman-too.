@@ -1,13 +1,21 @@
 # Магазин «Сулайман-Тоо» — Модуль: Отчеты
-# Версия: 2.2 (умная отмена продажи с возвратом на склад)
+# Версия: 2.3 (расходы + чистый доход + экспорт)
 
 import streamlit as st
 import pandas as pd
 import io
-import re
 from datetime import datetime, timedelta
 from database import supabase
 from utils import format_date_to_ddmmyyyy, fix_contract_name_on_fly
+
+def get_category_from_comment(comment: str) -> str:
+    comment = str(comment or "").strip()
+    if comment.startswith("[НУЖДЫ]"):
+        return "Нужды магазина"
+    if comment.startswith("[ПОСТАВЩИК]"):
+        return "Оплата контрагенту"
+    return "Без категории"
+
 
 def show_reports_page():
     user_role = st.session_state.get("user", {}).get("role", "Кассир")
@@ -20,6 +28,7 @@ def show_reports_page():
     try:
         sales_all = supabase.table("sales").select("*").order("date", desc=True).execute()
         products_all = supabase.table("products").select("*").execute()
+        ops_all = supabase.table("cash_operations").select("*").execute()
     except Exception as e:
         st.error(f"Ошибка: {e}")
         return
@@ -30,6 +39,7 @@ def show_reports_page():
 
     df = pd.DataFrame(sales_all.data)
     products_data = products_all.data or []
+    ops_data = ops_all.data or []
     all_sales_list = sales_all.data or []
 
     def parse_day(x):
@@ -56,12 +66,45 @@ def show_reports_page():
         today = datetime.now().date()
         filtered_df = df[df['day_obj'] == today].copy()
         st.info(f"📅 Продажи за сегодня: **{today.strftime('%d.%m.%Y')}**")
+        start_date = end_date = today
 
     if filtered_df.empty:
         st.info("За выбранный период продаж нет.")
         return
 
-    # ===== МЕТРИКИ =====
+    # ===== РАСЧЁТ РАСХОДОВ ЗА ПЕРИОД =====
+    needs_expense = 0.0
+    supplier_expense = 0.0
+
+    for op in ops_data:
+        amount = float(op.get("amount", 0) or 0)
+        if amount >= 0:
+            continue
+        # Парсим дату операции
+        op_day = None
+        try:
+            d_str = str(op.get("date", ""))[:10]
+            if "." in d_str:
+                op_day = datetime.strptime(d_str, "%d.%m.%Y").date()
+            else:
+                op_day = datetime.strptime(d_str, "%Y-%m-%d").date()
+        except:
+            continue
+
+        if user_role == "Администратор":
+            if not (start_date <= op_day <= end_date):
+                continue
+        else:
+            if op_day != today:
+                continue
+
+        cat = get_category_from_comment(op.get("comment", ""))
+        if cat == "Нужды магазина":
+            needs_expense += abs(amount)
+        elif cat == "Оплата контрагенту":
+            supplier_expense += abs(amount)
+
+    # ===== МЕТРИКИ ПРОДАЖ =====
     df_cash = filtered_df[filtered_df['payment'] == 'Наличные']
     df_credit = filtered_df[filtered_df['payment'] == 'Рассрочка']
 
@@ -78,6 +121,7 @@ def show_reports_page():
             credit_profit += (down + bal) - cost
 
     total_profit = cash_profit + credit_profit
+    net_income = total_profit - needs_expense   # Чистый доход
 
     st.markdown("---")
     if user_role == "Администратор":
@@ -90,13 +134,19 @@ def show_reports_page():
         p1.metric("📈 Прибыль (Нал)", f"{int(cash_profit):,} сом")
         p2.metric("📈 Прибыль (Рассрочка)", f"{int(credit_profit):,} сом")
         p3.metric("🏆 Суммарная прибыль", f"{int(total_profit):,} сом")
+
+        e1, e2, e3 = st.columns(3)
+        e1.metric("🏪 Расходы на нужды", f"{int(needs_expense):,} сом")
+        e2.metric("🚚 Выплаты поставщикам", f"{int(supplier_expense):,} сом")
+        e3.metric("💰 Чистый доход", f"{int(net_income):,} сом",
+                  delta=f"{int(net_income - total_profit):,}" if needs_expense else None)
     else:
         k1, k2, k3 = st.columns(3)
         k1.metric("🟢 Наличные", f"{int(cash_turnover):,} сом")
         k2.metric("🔵 Рассрочки", f"{int(credit_turnover):,} сом")
         k3.metric("🛍️ Всего", f"{int(cash_turnover + credit_turnover):,} сом")
 
-    # ===== ПОЛНЫЙ ОТЧЁТ (только Админ) =====
+    # ===== ПОЛНЫЙ ОТЧЁТ ПО ДНЯМ (Админ) =====
     if user_role == "Администратор":
         st.markdown("---")
         st.subheader("📋 Полный отчет по дням")
@@ -179,7 +229,7 @@ def show_reports_page():
     st.dataframe(df_display.drop(columns=["sale_id", "raw_payment", "down_payment", "pure_name", "batch_date", "qty_raw"], errors="ignore"),
                  use_container_width=True, hide_index=True)
 
-    # ===== РЕДАКТИРОВАНИЕ =====
+    # ===== РЕДАКТИРОВАНИЕ (Админ) =====
     if user_role == "Администратор":
         st.markdown("---")
         st.subheader("✏️ Редактировать выбранную операцию")
@@ -231,7 +281,7 @@ def show_reports_page():
                         except Exception as e:
                             st.error(f"Ошибка: {e}")
 
-    # ===== УМНАЯ ОТМЕНА ПРОДАЖИ =====
+    # ===== УМНАЯ ОТМЕНА (Админ) =====
     if user_role == "Администратор":
         st.markdown("---")
         st.subheader("🔄 Умная отмена продажи (с возвратом на склад)")
@@ -251,7 +301,6 @@ def show_reports_page():
             sale_id = s_del["sale_id"]
             payment_type = s_del["raw_payment"]
 
-            # === Находим связанные записи (для чеков с несколькими товарами) ===
             related_sales = []
             if payment_type == "Наличные" and "_" in str(sale_id):
                 base_id = str(sale_id).rsplit("_", 1)[0]
@@ -263,7 +312,6 @@ def show_reports_page():
                 related_sales = [next((s for s in all_sales_list if str(s.get("id")) == str(sale_id)), None)]
                 related_sales = [s for s in related_sales if s]
 
-            # === Предпросмотр возврата ===
             st.markdown("#### 📋 Что будет сделано при отмене:")
 
             restore_preview = []
@@ -276,7 +324,6 @@ def show_reports_page():
                     qty = int(s.get("qty", 0) or 0)
                     name_display = s.get("name", pure)
 
-                    # Ищем партию
                     matching = [
                         p for p in products_data
                         if str(p.get("name", "")).lower().strip() == pure
@@ -294,7 +341,6 @@ def show_reports_page():
                             "product_id": p["id"]
                         })
                     else:
-                        # Ищем просто по имени (берём первую подходящую)
                         matching_any = [
                             p for p in products_data
                             if str(p.get("name", "")).lower().strip() == pure
@@ -327,13 +373,13 @@ def show_reports_page():
                 else:
                     st.warning("Не удалось определить товары для возврата.")
 
-            else:  # Рассрочка
+            else:
                 st.info("Это договор рассрочки.")
-                st.write(f"• Будут удалены все платежи по договору")
+                st.write("• Будут удалены все платежи по договору")
                 down = int(s_del.get("down_payment", 0) or 0)
                 if down > 0:
                     st.write(f"• Будет откатан первоначальный взнос **{down:,} сом** из кассы (если найдётся)")
-                st.warning("⚠️ Товар по рассрочке нужно будет вернуть на склад **вручную** (детализация позиций не сохранялась).")
+                st.warning("⚠️ Товар по рассрочке нужно будет вернуть на склад **вручную**.")
 
             st.markdown("---")
             confirm = st.checkbox("Я понимаю последствия и подтверждаю отмену", key="confirm_smart_cancel")
@@ -342,14 +388,12 @@ def show_reports_page():
                 try:
                     errors = []
 
-                    # 1. Возврат на склад (только для наличных)
                     if payment_type == "Наличные":
                         for item in restore_preview:
                             pid = item.get("product_id")
                             qty = item.get("Вернуть шт.", 0)
                             if pid and isinstance(qty, int) and qty > 0:
                                 try:
-                                    # Получаем актуальное количество
                                     cur = supabase.table("products").select("qty").eq("id", pid).execute()
                                     if cur.data:
                                         new_qty = int(cur.data[0]["qty"]) + qty
@@ -357,20 +401,17 @@ def show_reports_page():
                                 except Exception as e:
                                     errors.append(f"Ошибка возврата товара: {e}")
 
-                    # 2. Удаляем связанные продажи
                     for s in related_sales:
                         try:
                             supabase.table("sales").delete().eq("id", s["id"]).execute()
                         except Exception as e:
                             errors.append(f"Ошибка удаления продажи {s.get('id')}: {e}")
 
-                    # 3. Удаляем платежи по рассрочке
                     try:
                         supabase.table("credit_payments").delete().eq("sale_id", sale_id).execute()
                     except Exception as e:
                         errors.append(f"Ошибка удаления платежей: {e}")
 
-                    # 4. Откат первоначального взноса из кассы
                     if payment_type == "Рассрочка":
                         down = float(s_del.get("down_payment", 0) or 0)
                         if down > 0:
