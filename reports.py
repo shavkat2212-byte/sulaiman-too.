@@ -438,3 +438,110 @@ def show_reports_page():
 
                 except Exception as e:
                     st.error(f"Критическая ошибка при отмене: {e}")
+
+    # =========================================================================
+    # ДВИЖЕНИЕ СКЛАДА (принято / ушло / остаток)
+    # =========================================================================
+    if user_role == "Администратор":
+        st.markdown("---")
+        st.subheader("📦 Движение склада (принято / ушло / остаток)")
+
+        # --- Приход на склад ---
+        try:
+            products_res = supabase.table("products").select("*").execute()
+            products = products_res.data or []
+        except Exception as e:
+            st.error(f"Ошибка загрузки склада: {e}")
+            products = []
+
+        # Группируем приход по дате
+        income_by_day = {}
+        total_income_qty = 0
+        total_income_cost = 0.0
+
+        for p in products:
+            day = str(p.get("date", ""))[:10]
+            qty = int(p.get("qty", 0) or 0)
+            cost = float(p.get("cost", 0) or 0)
+            sum_cost = qty * cost
+
+            if day not in income_by_day:
+                income_by_day[day] = {"qty": 0, "cost": 0.0}
+            income_by_day[day]["qty"] += qty
+            income_by_day[day]["cost"] += sum_cost
+
+            total_income_qty += qty
+            total_income_cost += sum_cost
+
+        # --- Расход (продажи) по себестоимости ---
+        expense_by_day = {}
+        total_expense_qty = 0
+        total_expense_cost = 0.0
+
+        for s in all_sales_list:
+            day = str(s.get("day", ""))[:10]
+            qty = int(s.get("qty", 0) or 0)
+            cost = float(s.get("total_cost", 0) or 0)
+
+            if day not in expense_by_day:
+                expense_by_day[day] = {"qty": 0, "cost": 0.0}
+            expense_by_day[day]["qty"] += qty
+            expense_by_day[day]["cost"] += cost
+
+            total_expense_qty += qty
+            total_expense_cost += cost
+
+        # --- Общие метрики ---
+        current_stock_cost = total_income_cost - total_expense_cost
+        current_stock_qty = total_income_qty - total_expense_qty
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("📥 Всего принято (шт)", f"{total_income_qty:,}")
+        m2.metric("📥 Всего принято (себест.)", f"{total_income_cost:,.0f} сом")
+        m3.metric("📤 Всего ушло (себест.)", f"{total_expense_cost:,.0f} сом")
+        m4.metric("📦 Остаток склада (себест.)", f"{current_stock_cost:,.0f} сом")
+
+        st.caption(f"Остаток в штуках (примерно): **{current_stock_qty:,} шт.**")
+
+        # --- Таблица по дням ---
+        st.markdown("#### 📅 Движение по дням")
+
+        all_days = sorted(set(list(income_by_day.keys()) + list(expense_by_day.keys())))
+        rows = []
+        running_cost = 0.0
+
+        for day in all_days:
+            inc_qty = income_by_day.get(day, {}).get("qty", 0)
+            inc_cost = income_by_day.get(day, {}).get("cost", 0.0)
+            exp_qty = expense_by_day.get(day, {}).get("qty", 0)
+            exp_cost = expense_by_day.get(day, {}).get("cost", 0.0)
+
+            running_cost += inc_cost - exp_cost
+
+            rows.append({
+                "Дата": day,
+                "Принято (шт)": inc_qty,
+                "Принято (себест.)": round(inc_cost),
+                "Ушло (шт)": exp_qty,
+                "Ушло (себест.)": round(exp_cost),
+                "Остаток на конец дня (себест.)": round(running_cost)
+            })
+
+        if rows:
+            df_move = pd.DataFrame(rows)
+            st.dataframe(df_move, use_container_width=True, hide_index=True)
+
+            # Excel
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                df_move.to_excel(writer, index=False, sheet_name="Движение склада")
+            buffer.seek(0)
+            st.download_button(
+                "📥 Скачать движение склада (Excel)",
+                data=buffer,
+                file_name=f"Dvizhenie_sklada_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        else:
+            st.info("Данных по движению склада пока нет.")
