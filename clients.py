@@ -367,8 +367,8 @@ def show_clients_page():
                             st.error(f"Ошибка: {e}")
                             st.exception(e)
 
-    # =========================================================================
-    # ВКЛАДКА 3: ПЛАТЕЖИ СЕГОДНЯ / ПРОСРОЧКИ + ПРОВЕРКА ГРАФИКОВ
+        # =========================================================================
+    # ВКЛАДКА 3: ПЛАТЕЖИ СЕГОДНЯ / ПРОСРОЧКИ + ИСПРАВЛЕНИЕ ГРАФИКОВ
     # =========================================================================
     with tab_today:
         st.subheader("📅 Платежи на сегодня и просрочки")
@@ -379,6 +379,7 @@ def show_clients_page():
             payments_res = supabase.table("credit_payments").select("*").execute()
             all_payments = payments_res.data if payments_res.data else []
             clients_map = {c["id"]: c for c in (c_all.data or [])}
+            sales_map = {s["id"]: s for s in all_sales}
         except Exception as e:
             st.error(f"Ошибка загрузки: {e}")
             return
@@ -396,9 +397,10 @@ def show_clients_page():
                     continue
             return None
 
-        # ----- 1. Кто должен платить сегодня + просрочки -----
+        # ----- Собираем сегодня и просрочки -----
         today_list = []
         overdue_list = []
+        overdue_sale_ids = set()
 
         for p in all_payments:
             if p.get("status") == "Оплачен":
@@ -425,18 +427,22 @@ def show_clients_page():
                 "Оплачено": int(paid),
                 "Осталось": int(left),
                 "Статус": "🔴 ПРОСРОЧКА" if due < today else "🟡 Сегодня",
-                "due_obj": due
+                "due_obj": due,
+                "sale_id": p.get("sale_id"),
+                "payment_id": p.get("id")
             }
 
             if due < today:
                 overdue_list.append(row)
+                if p.get("sale_id"):
+                    overdue_sale_ids.add(p.get("sale_id"))
             elif due == today:
                 today_list.append(row)
 
         # Сегодня
         st.markdown("### 🟡 Должны оплатить сегодня")
         if today_list:
-            df_today = pd.DataFrame(today_list).drop(columns=["due_obj"])
+            df_today = pd.DataFrame(today_list).drop(columns=["due_obj", "sale_id", "payment_id"], errors="ignore")
             st.dataframe(df_today, use_container_width=True, hide_index=True)
             st.metric("Сумма к получению сегодня", f"{sum(r['Осталось'] for r in today_list):,} сом")
         else:
@@ -448,15 +454,95 @@ def show_clients_page():
         st.markdown("### 🔴 Просроченные платежи")
         if overdue_list:
             overdue_list = sorted(overdue_list, key=lambda x: x["due_obj"])
-            df_over = pd.DataFrame(overdue_list).drop(columns=["due_obj"])
+            df_over = pd.DataFrame(overdue_list).drop(columns=["due_obj", "sale_id", "payment_id"], errors="ignore")
             st.dataframe(df_over, use_container_width=True, hide_index=True)
             st.error(f"Всего просрочено: **{sum(r['Осталось'] for r in overdue_list):,} сом** у {len(overdue_list)} платежей")
         else:
             st.success("Просроченных платежей нет.")
 
+        # ===== КНОПКА ИСПРАВЛЕНИЯ (только Админ) =====
+        if user_role == "Администратор" and overdue_sale_ids:
+            st.markdown("---")
+            st.subheader("🛠️ Исправление неправильных графиков")
+            st.warning(f"Найдено **{len(overdue_sale_ids)}** договоров с просроченными (неправильными) датами.")
+            st.info("Кнопка удалит старые просроченные графики и создаст новые, начиная с текущего месяца.")
+
+            if st.button("📅 Исправить все просроченные графики", type="primary"):
+                fixed = 0
+                errors = []
+
+                for sale_id in overdue_sale_ids:
+                    try:
+                        sale = sales_map.get(sale_id)
+                        if not sale:
+                            continue
+
+                        # Все платежи этого договора
+                        sale_payments = [p for p in all_payments if p.get("sale_id") == sale_id]
+                        months = len(sale_payments) if sale_payments else 6
+
+                        # Сколько уже оплачено по этому договору
+                        already_paid = sum(float(p.get("amount_paid", 0) or 0) for p in sale_payments)
+
+                        credit_balance = float(sale.get("credit_balance", 0) or 0)
+                        down = float(sale.get("down_payment", 0) or 0)
+                        total_sale = float(sale.get("total_sale", 0) or 0)
+
+                        # Остаток к рассрочке
+                        remaining = credit_balance if credit_balance > 0 else max(0, total_sale - down)
+                        remaining = max(0, remaining - already_paid)
+
+                        if remaining <= 0 or months <= 0:
+                            continue
+
+                        # Удаляем старые платежи
+                        for p in sale_payments:
+                            supabase.table("credit_payments").delete().eq("id", p["id"]).execute()
+
+                        # Создаём новый график с текущего месяца
+                        monthly = round(remaining / months, 2)
+                        balance = remaining
+                        start = datetime.now().date()
+
+                        for i in range(1, months + 1):
+                            year = start.year
+                            month = start.month + i
+                            while month > 12:
+                                month -= 12
+                                year += 1
+                            day = min(start.day, 28)
+                            due = datetime(year, month, day).date()
+
+                            if i == months:
+                                amount = round(balance, 2)
+                            else:
+                                amount = monthly
+                                balance = round(balance - monthly, 2)
+
+                            due_str = due.strftime("%Y-%m-%d")
+
+                            supabase.table("credit_payments").insert({
+                                "sale_id": sale_id,
+                                "client_id": sale.get("client_id"),
+                                "due_date": due_str,
+                                "amount_expected": amount,
+                                "amount_paid": 0,
+                                "status": "Не оплачен"
+                            }).execute()
+
+                        fixed += 1
+                    except Exception as e:
+                        errors.append(f"{sale_id}: {e}")
+
+                if fixed:
+                    st.success(f"✅ Исправлено договоров: {fixed}")
+                if errors:
+                    st.error(f"Ошибки: {errors}")
+                st.rerun()
+
         st.markdown("---")
 
-        # ----- 2. Проверка: у кого нет графика -----
+        # ----- Проверка: у кого нет графика -----
         st.markdown("### ⚠️ Проверка графиков платежей")
 
         sales_without_schedule = []
@@ -466,15 +552,15 @@ def show_clients_page():
                 client_name = clients_map.get(s.get("client_id"), {}).get("fio", "Неизвестный")
                 sales_without_schedule.append({
                     "Клиент": client_name,
-                    "Договор": s.get("name", "")[:60],
+                    "Договор": str(s.get("name", ""))[:60],
                     "Сумма": int(s.get("total_sale", 0)),
                     "Долг + наценка": int(s.get("credit_balance", 0)),
                     "Дата оформления": s.get("date", "")
                 })
 
         if sales_without_schedule:
-            st.warning(f"Найдено **{len(sales_without_schedule)}** договоров без графика платежей:")
+            st.warning(f"Найдено **{len(sales_without_schedule)}** договоров без графика:")
             st.dataframe(pd.DataFrame(sales_without_schedule), use_container_width=True, hide_index=True)
-            st.info("Зайди в карточку клиента → Редактирование → «Пересоздать график платежей»")
+            st.info("Зайди в карточку клиента → Редактирование → «Пересоздать график»")
         else:
             st.success("✅ У всех договоров рассрочки есть график платежей.")
