@@ -268,55 +268,69 @@ def show_clients_page():
 
                         st.markdown("---")
 
-                        # --- 2. Пересчитать график ---
-                        st.markdown("##### 2. Разбить / пересчитать график платежей")
-                        current_payments = [p for p in all_payments if p.get("sale_id") == selected_sale["id"]]
-                        current_months = len(current_payments) if current_payments else 1
+                                    # --- 2. Пересчитать график ---
+            st.markdown("##### 2. Разбить / пересчитать график платежей")
+            current_payments = [p for p in all_payments if p.get("sale_id") == selected_sale["id"]]
+            current_months = len(current_payments) if current_payments else 1
 
-                        new_months = st.number_input(
-                            "Количество месяцев (новый график)",
-                            min_value=1,
-                            max_value=36,
-                            value=max(current_months, 3),
-                            key="new_months_input"
-                        )
+            new_months = st.number_input(
+                "Количество месяцев (новый график)",
+                min_value=1, max_value=36,
+                value=max(current_months, 3),
+                key="new_months_input"
+            )
 
-                        total = float(selected_sale.get("total_sale", 0) or 0)
-                        down = float(selected_sale.get("down_payment", 0) or 0)
-                        remaining = max(0, total - down)
+            total = float(selected_sale.get("total_sale", 0) or 0)
+            down = float(selected_sale.get("down_payment", 0) or 0)
+            credit_balance = float(selected_sale.get("credit_balance", 0) or 0)
+            
+            # Берём сумму с наценкой
+            remaining = credit_balance if credit_balance > 0 else max(0, total - down)
 
-                        st.info(f"Сумма договора: **{total:,.0f}** | Первоначальный взнос: **{down:,.0f}** | К рассрочке: **{remaining:,.0f}**")
+            st.info(f"Сумма договора: **{total:,.0f}** | Первоначальный взнос: **{down:,.0f}** | К рассрочке (с наценкой): **{remaining:,.0f}**")
 
-                        if st.button("📅 Пересоздать график платежей", type="primary"):
-                            try:
-                                for p in current_payments:
-                                    supabase.table("credit_payments").delete().eq("id", p["id"]).execute()
+            if st.button("📅 Пересоздать график платежей", type="primary"):
+                try:
+                    # Удаляем старые платежи
+                    for p in current_payments:
+                        supabase.table("credit_payments").delete().eq("id", p["id"]).execute()
 
-                                monthly = round(remaining / new_months, 2)
-                                balance = remaining
-                                start = datetime.now()
+                    monthly = round(remaining / new_months, 2)
+                    balance = remaining
+                    start = datetime.now().date()
 
-                                for i in range(1, new_months + 1):
-                                    due = start + timedelta(days=30 * i)
-                                    if i == new_months:
-                                        amount = round(balance, 2)
-                                    else:
-                                        amount = monthly
-                                        balance = round(balance - monthly, 2)
+                    for i in range(1, new_months + 1):
+                        # Правильный расчёт даты (добавляем месяцы)
+                        year = start.year
+                        month = start.month + i
+                        while month > 12:
+                            month -= 12
+                            year += 1
+                        day = min(start.day, 28)  # безопасно для всех месяцев
+                        due = datetime(year, month, day).date()
 
-                                    supabase.table("credit_payments").insert({
-                                        "sale_id": selected_sale["id"],
-                                        "client_id": selected_sale["client_id"],
-                                        "due_date": due.strftime("%d.%m.%Y"),
-                                        "amount_expected": amount,
-                                        "amount_paid": 0,
-                                        "status": "Ожидается"
-                                    }).execute()
+                        if i == new_months:
+                            amount = round(balance, 2)
+                        else:
+                            amount = monthly
+                            balance = round(balance - monthly, 2)
 
-                                st.success(f"График пересоздан на {new_months} месяцев!")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Ошибка при пересчёте: {e}")
+                        # ОБЯЗАТЕЛЬНО формат YYYY-MM-DD
+                        due_str = due.strftime("%Y-%m-%d")
+
+                        supabase.table("credit_payments").insert({
+                            "sale_id": selected_sale["id"],
+                            "client_id": selected_sale["client_id"],
+                            "due_date": due_str,
+                            "amount_expected": amount,
+                            "amount_paid": 0,
+                            "status": "Не оплачен"
+                        }).execute()
+
+                    st.success(f"✅ График успешно создан на {new_months} месяцев!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Ошибка при пересчёте: {e}")
 
                     # =================================================
                     # ГЕНЕРАЦИЯ ДОГОВОРА
