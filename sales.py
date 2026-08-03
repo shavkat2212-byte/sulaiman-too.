@@ -157,19 +157,162 @@ def show_sales_page():
                             "comment": f"Перв. взнос по рассрочке №{contract_num_suffix[:9]} от {sel_client_name}"
                         }).execute()
                 
-                if pay_method == "Рассрочка" and client_id:
-                    for m in range(1, months + 1):
-                        due_date_obj = sale_date + timedelta(days=30 * m)
-                        # ИСПРАВЛЕНО: %m вместо %M
-                        formatted_due_date = due_date_obj.strftime("%d.%m.%Y")
+                        if pay_method == "Рассрочка":
+            if not clients_res.data:
+                st.error("❌ Сначала добавьте клиента в разделе «База клиентов».")
+                return
+            client_opts = {f"{c['fio']} ({c['phone']})": c for c in clients_res.data}
+            sel_client_label = st.selectbox("👤 Выберите клиента", list(client_opts.keys()))
+            client_id = client_opts[sel_client_label]["id"]
+            sel_client_name = client_opts[sel_client_label]["fio"]
+            
+            c_r1, c_r2 = st.columns(2)
+            down_payment = c_r1.number_input("💵 Первоначальный взнос, сом", min_value=0.0, max_value=float(total_cart_sum), value=0.0)
+            months = c_r2.number_input("📅 Срок рассрочки (месяцев)", min_value=1, max_value=24, value=6)
+            
+            net_debt = total_cart_sum - down_payment
+            default_markup = months * 3
+            
+            st.markdown("#### 🛠️ Корректировка условий рассрочки")
+            col_m1, col_m2 = st.columns(2)
+            custom_markup_percent = col_m1.number_input("Процент наценки (всего за срок), %", min_value=0.0, value=float(default_markup), step=1.0)
+            
+            calculated_with_markup = net_debt + (net_debt * (custom_markup_percent / 100))
+            default_monthly = round(calculated_with_markup / months) if months > 0 else 0
+            
+            monthly_payment = col_m2.number_input("Ежемесячный платёж (можно округлить вручную), сом", min_value=0, value=int(default_monthly), step=10)
+            
+            total_with_markup = monthly_payment * months
+            overpayment = total_with_markup - net_debt
+            
+            st.warning(f"📊 Расчёт: Чистый долг: {net_debt:,.0f} сом | Всего с наценкой: {total_with_markup:,.0f} сом | Переплата: {overpayment:,.0f} сом")
+
+            # ===== ПРЕДПРОСМОТР ГРАФИКА =====
+            st.markdown("#### 📅 Предпросмотр графика платежей")
+            preview_rows = []
+            balance = float(total_with_markup)
+            start = sale_date
+
+            for i in range(1, int(months) + 1):
+                year = start.year
+                month = start.month + i
+                while month > 12:
+                    month -= 12
+                    year += 1
+                day = min(start.day, 28)
+                due = datetime(year, month, day).date()
+
+                if i == months:
+                    amount = round(balance, 2)
+                else:
+                    amount = float(monthly_payment)
+                    balance = round(balance - amount, 2)
+
+                preview_rows.append({
+                    "№": i,
+                    "Дата платежа": due.strftime("%d.%m.%Y"),
+                    "Сумма": int(amount),
+                    "Остаток долга": int(max(0, balance))
+                })
+
+            st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True)
+            st.caption("Проверьте даты и суммы перед оформлением. Если всё верно — нажимайте кнопку ниже.")
+
+        else:
+            total_with_markup = 0
+            monthly_payment = 0
+
+        if st.button("🚀 Оформить и провести сделку", type="primary", use_container_width=True):
+            if pay_method == "Рассрочка" and not client_id:
+                st.error("❌ Выберите клиента для рассрочки!")
+                return
+                
+            base_group_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
+            day_str = sale_date.strftime("%Y-%m-%d")
+            formatted_date_full = f"{sale_date.strftime('%d.%m.%Y')} {datetime.now().strftime('%H:%M')}"
+            contract_num_suffix = datetime.now().strftime("%d%m-%H%M%S")
+            
+            try:
+                total_cost_sum = 0.0
+                items_list_str = []
+                for item in st.session_state.cart:
+                    p_res = supabase.table("products").select("qty").eq("id", item["batch_id"]).execute().data[0]
+                    new_qty = int(p_res["qty"]) - item["qty"]
+                    supabase.table("products").update({"qty": new_qty}).eq("id", item["batch_id"]).execute()
+                    total_cost_sum += (item["qty"] * item["cost"])
+                    items_list_str.append(f"{item['name']} ({item['qty']} шт.)")
+                
+                goods_summary = ", ".join(items_list_str)
+                
+                if pay_method == "Наличные":
+                    for idx, item in enumerate(st.session_state.cart):
+                        t_cost = item["qty"] * item["cost"]
+                        unique_sale_id = f"{base_group_id}_{idx}"
+                        
                         try:
-                            supabase.table("credit_payments").insert({
-                                "sale_id": base_group_id, "client_id": client_id, "due_date": formatted_due_date,
-                                "amount_expected": int(monthly_payment), "amount_paid": 0, "status": "Не оплачен"
-                            }).execute()
-                        except: continue
+                            b_date_formatted = datetime.strptime(item['batch_date'], '%Y-%m-%d').strftime('%d.%m.%Y')
+                        except:
+                            b_date_formatted = item['batch_date']
+
+                        supabase.table("sales").insert({
+                            "id": unique_sale_id, "date": formatted_date_full, "day": day_str,
+                            "name": f"{item['name']} (приход {b_date_formatted})", "pure_name": item["pure_name"],
+                            "batch_date": item["batch_date"],
+                            "qty": item["qty"], "total_sale": int(item["total"]), "total_cost": int(t_cost),
+                            "profit": int(item["total"] - t_cost),
+                            "payment": "Наличные", "down_payment": 0, "credit_balance": 0, "client_id": None
+                        }).execute()
+                else:
+                    contract_name = f"Договор рассрочки №{contract_num_suffix[:9]} [{goods_summary}] — {sel_client_name}"
+                    supabase.table("sales").insert({
+                        "id": base_group_id, "date": formatted_date_full, "day": day_str,
+                        "name": contract_name, "pure_name": "рассрочка", "batch_date": day_str,
+                        "qty": 1, "total_sale": int(total_cart_sum), "total_cost": int(total_cost_sum),
+                        "profit": int(total_cart_sum - total_cost_sum),
+                        "payment": "Рассрочка", "down_payment": int(down_payment),
+                        "credit_balance": int(total_with_markup), "client_id": client_id
+                    }).execute()
+                    
+                    if down_payment > 0:
+                        supabase.table("cash_operations").insert({
+                            "date": formatted_date_full, 
+                            "amount": float(down_payment), 
+                            "comment": f"Перв. взнос по рассрочке №{contract_num_suffix[:9]} от {sel_client_name}"
+                        }).execute()
+                
+                    # ===== ПРАВИЛЬНОЕ СОЗДАНИЕ ГРАФИКА =====
+                    balance = float(total_with_markup)
+                    start = sale_date
+
+                    for i in range(1, int(months) + 1):
+                        year = start.year
+                        month = start.month + i
+                        while month > 12:
+                            month -= 12
+                            year += 1
+                        day = min(start.day, 28)
+                        due = datetime(year, month, day).date()
+
+                        if i == months:
+                            amount = round(balance, 2)
+                        else:
+                            amount = float(monthly_payment)
+                            balance = round(balance - amount, 2)
+
+                        # ОБЯЗАТЕЛЬНО формат YYYY-MM-DD
+                        due_str = due.strftime("%Y-%m-%d")
+
+                        supabase.table("credit_payments").insert({
+                            "sale_id": base_group_id,
+                            "client_id": client_id,
+                            "due_date": due_str,
+                            "amount_expected": amount,
+                            "amount_paid": 0,
+                            "status": "Не оплачен"
+                        }).execute()
                             
                 st.session_state.cart = []
                 st.success("🎉 Сделка успешно проведена!")
                 st.rerun()
-            except Exception as e: st.error(f"Ошибка базы данных: {e}")
+            except Exception as e:
+                st.error(f"Ошибка базы данных: {e}")
