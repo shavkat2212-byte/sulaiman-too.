@@ -106,64 +106,112 @@ def show_stock_page():
     st.markdown("---")
 
     # ===== ЗАГРУЗКА ИЗ EXCEL =====
-    st.subheader("📥 Загрузка товаров из Excel")
-    uploaded = st.file_uploader("Выберите файл", type=["xlsx", "xls", "csv"])
+            st.subheader("📥 Загрузка/Обновление товаров из Excel (.xlsx или .csv)")
+        uploaded = st.file_uploader("Выберите файл таблицы", type=["csv", "xlsx"])
+        
+        if uploaded is not None:
+            try:
+                if uploaded.name.endswith(".xlsx"):
+                    df = pd.read_excel(uploaded, engine="openpyxl")
+                else:
+                    try:
+                        df = pd.read_csv(uploaded, encoding="utf-8")
+                    except:
+                        uploaded.seek(0)
+                        df = pd.read_csv(uploaded, sep=None, engine="python", encoding="cp1251")
 
-    if uploaded is not None:
-        try:
-            if uploaded.name.endswith(".csv"):
-                upload_df = pd.read_csv(uploaded)
-            else:
-                upload_df = pd.read_excel(uploaded)
+                st.write("**Предпросмотр файла:**")
+                st.dataframe(df.head(15), use_container_width=True)
 
-            st.write("Столбцы в файле:", list(upload_df.columns))
-            st.dataframe(upload_df.head(5))
+                # Пробуем найти столбцы по названиям
+                cols = [str(c).strip().lower() for c in df.columns]
+                
+                def find_col(variants):
+                    for v in variants:
+                        for i, c in enumerate(cols):
+                            if v in c:
+                                return i
+                    return None
 
-            col_map = {}
-            for col in upload_df.columns:
-                cl = str(col).lower().strip()
-                if cl in ["name", "товар", "название", "наименование"]:
-                    col_map["name"] = col
-                elif cl in ["qty", "количество", "кол-во", "кол", "шт"]:
-                    col_map["qty"] = col
-                elif cl in ["cost", "закупка", "цена закупки", "себестоимость"]:
-                    col_map["cost"] = col
-                elif cl in ["price", "продажа", "цена продажи", "розница"]:
-                    col_map["price"] = col
+                name_idx = find_col(["товар", "название", "name", "наименование"]) or 0
+                qty_idx  = find_col(["кол", "qty", "количество", "шт"]) or 1
+                cost_idx = find_col(["себес", "закуп", "cost", "закупочная"]) or 2
+                price_idx = find_col(["прод", "price", "розниц", "цена"]) or 3
 
-            if "name" not in col_map:
-                st.error("Не найден столбец с названием товара")
-            else:
-                if st.button("Загрузить на склад", type="primary"):
-                    success = 0
-                    errors = []
-                    for idx, row in upload_df.iterrows():
-                        try:
-                            name = str(row[col_map["name"]]).strip().lower()
-                            if not name or name == "nan":
-                                continue
-                            qty = int(float(row.get(col_map.get("qty"), 0) or 0))
-                            cost = float(row.get(col_map.get("cost"), 0) or 0)
-                            price = float(row.get(col_map.get("price"), 0) or 0)
-                            if qty <= 0:
-                                continue
-                            supabase.table("products").insert({
-                                "name": name,
-                                "qty": qty,
-                                "cost": cost,
-                                "price": price,
-                                "date": datetime.now().strftime("%Y-%m-%d")
-                            }).execute()
-                            success += 1
-                        except Exception as e:
-                            errors.append(f"Строка {idx+2}: {e}")
-                    if success:
-                        st.success(f"✅ Загружено: {success} товаров")
-                    if errors:
-                        st.error(f"Ошибок: {len(errors)}")
+                st.caption(f"Столбцы: Название=№{name_idx+1}, Кол-во=№{qty_idx+1}, Закупка=№{cost_idx+1}, Продажа=№{price_idx+1}")
+
+                parsed = []
+                errors = []
+
+                for idx, row in df.iterrows():
+                    try:
+                        name_raw = str(row.iloc[name_idx]).strip().lower()
+                        if not name_raw or name_raw in ("nan", "товар", "название"):
+                            continue
+
+                        qty_raw = int(float(str(row.iloc[qty_idx]).replace(" ", "").replace(",", ".")))
+                        cost_raw = float(str(row.iloc[cost_idx]).replace(" ", "").replace(",", "."))
+                        price_raw = float(str(row.iloc[price_idx]).replace(" ", "").replace(",", "."))
+
+                        if qty_raw <= 0:
+                            errors.append(f"Строка {idx+2}: количество ≤ 0 — пропущено")
+                            continue
+                        if cost_raw <= 0 and price_raw <= 0:
+                            errors.append(f"Строка {idx+2}: и закупка и продажа = 0 — пропущено ({name_raw})")
+                            continue
+
+                        parsed.append({
+                            "name": name_raw,
+                            "qty": qty_raw,
+                            "cost": cost_raw,
+                            "price": price_raw
+                        })
+                    except Exception as e:
+                        errors.append(f"Строка {idx+2}: ошибка — {e}")
+
+                if parsed:
+                    st.success(f"Готово к загрузке: **{len(parsed)}** товаров")
+                    st.dataframe(pd.DataFrame(parsed), use_container_width=True, hide_index=True)
+                else:
+                    st.error("Не удалось прочитать ни одного товара")
+
+                if errors:
+                    with st.expander(f"⚠️ Ошибки ({len(errors)})"):
+                        for e in errors:
+                            st.write(e)
+
+                if parsed and st.button("🚀 Загрузить товары на склад", type="primary", use_container_width=True):
+                    today = datetime.now().strftime("%Y-%m-%d")
+                    existing_res = supabase.table("products").select("id", "name").eq("date", today).execute()
+                    existing_map = {row["name"]: row["id"] for row in (existing_res.data or [])}
+
+                    insert_list = []
+                    updated = 0
+                    for item in parsed:
+                        if item["name"] in existing_map:
+                            supabase.table("products").update({
+                                "qty": item["qty"],
+                                "cost": item["cost"],
+                                "price": item["price"]
+                            }).eq("id", existing_map[item["name"]]).execute()
+                            updated += 1
+                        else:
+                            insert_list.append({
+                                "name": item["name"],
+                                "qty": item["qty"],
+                                "cost": item["cost"],
+                                "price": item["price"],
+                                "date": today
+                            })
+
+                    if insert_list:
+                        supabase.table("products").insert(insert_list).execute()
+
+                    st.success(f"✅ Добавлено: {len(insert_list)}, обновлено: {updated}")
                     st.rerun()
-        except Exception as e:
-            st.error(f"Ошибка чтения файла: {e}")
+
+            except Exception as e:
+                st.error(f"Ошибка чтения файла: {e}")
 
     st.markdown("---")
 
