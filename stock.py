@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Управление складом
-# Версия: 1.5 (умная загрузка Excel + предпросмотр)
+# Версия: 1.6 (Excel + редактирование даты партии + удаление)
 
 import streamlit as st
 import pandas as pd
@@ -30,6 +30,7 @@ def db_get_stock():
 
 def show_stock_page():
     st.header("Управление складом")
+    user_role = st.session_state.get("user", {}).get("role", "Кассир")
     df_stock, total_qty, total_cost, total_retail = db_get_stock()
 
     c1, c2, c3 = st.columns(3)
@@ -85,14 +86,10 @@ def show_stock_page():
             cost_idx = find_col(["себес", "закуп", "cost", "закупочная"])
             price_idx = find_col(["прод", "price", "розниц", "цена"])
 
-            if name_idx is None:
-                name_idx = 0
-            if qty_idx is None:
-                qty_idx = 1
-            if cost_idx is None:
-                cost_idx = 2
-            if price_idx is None:
-                price_idx = 3
+            if name_idx is None: name_idx = 0
+            if qty_idx is None: qty_idx = 1
+            if cost_idx is None: cost_idx = 2
+            if price_idx is None: price_idx = 3
 
             st.caption(
                 f"Столбцы: Название=№{name_idx+1}, Кол-во=№{qty_idx+1}, "
@@ -175,7 +172,7 @@ def show_stock_page():
     st.markdown("---")
 
     # =====================================================================
-    # РУЧНОЕ ДОБАВЛЕНИЕ И РЕДАКТИРОВАНИЕ
+    # РУЧНОЕ ДОБАВЛЕНИЕ
     # =====================================================================
     col_add, col_edit = st.columns(2)
 
@@ -202,37 +199,59 @@ def show_stock_page():
                     st.rerun()
 
     with col_edit:
-        st.subheader("✏️ Редактировать / Удалить партию")
+        st.subheader("✏️ Редактировать партию")
         if df_stock.empty:
             st.info("Товаров пока нет")
         else:
             options = {
-                f"{row['Товар']} | Приход: {row['Дата поступления']}": row["id"]
+                f"{row['Товар']} | Приход: {row['Дата поступления']} | {int(row['В наличии (шт)'])} шт": row["id"]
                 for _, row in df_stock.iterrows()
             }
-            selected = st.selectbox("Выберите запись", list(options.keys()))
+            selected = st.selectbox("Выберите запись", list(options.keys()), key="edit_select")
             batch_id = options[selected]
             item_data = supabase.table("products").select("*").eq("id", batch_id).execute().data[0]
 
+            # Дата партии
+            try:
+                current_date = datetime.strptime(str(item_data["date"])[:10], "%Y-%m-%d").date()
+            except:
+                try:
+                    current_date = datetime.strptime(str(item_data["date"])[:10], "%d.%m.%Y").date()
+                except:
+                    current_date = datetime.now().date()
+
             with st.form("edit_form"):
                 new_name = st.text_input("Название товара", value=str(item_data["name"]).capitalize())
-                new_qty = st.number_input("Изменить остаток (шт)", min_value=0, value=int(item_data["qty"]))
+                new_qty = st.number_input("Остаток (шт)", min_value=0, value=int(item_data["qty"]))
                 new_cost = st.number_input("Цена закупки", min_value=0.0, value=float(item_data["cost"]))
                 new_price = st.number_input("Цена продажи", min_value=0.0, value=float(item_data["price"]))
+                new_date = st.date_input("Дата поступления (партия)", value=current_date)
 
-                if st.form_submit_button("💾 Сохранить изменения"):
+                col_save, col_del = st.columns(2)
+                save_btn = col_save.form_submit_button("💾 Сохранить", use_container_width=True)
+                del_btn = col_del.form_submit_button("🗑️ Удалить партию", use_container_width=True)
+
+                if save_btn:
                     if new_name.strip():
-                        processed_name = new_name.strip().lower()
                         supabase.table("products").update({
-                            "name": processed_name,
+                            "name": new_name.strip().lower(),
                             "qty": new_qty,
                             "cost": new_cost,
-                            "price": new_price
+                            "price": new_price,
+                            "date": new_date.strftime("%Y-%m-%d")
                         }).eq("id", batch_id).execute()
-                        st.success("Изменения успешно сохранены!")
+                        st.success("Изменения сохранены!")
                         st.rerun()
                     else:
-                        st.error("Название товара не может быть пустым!")
+                        st.error("Название не может быть пустым")
+
+                if del_btn:
+                    if user_role == "Администратор":
+                        supabase.table("products").delete().eq("id", batch_id).execute()
+                        st.success("Партия удалена!")
+                        st.rerun()
+                    else:
+                        st.error("Удалять может только Администратор")
 
     st.markdown("---")
     st.subheader("📋 Товары на складе")
