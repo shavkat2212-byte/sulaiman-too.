@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Касса
-# Версия: 3.0 (категории расходов + редактирование + фильтры)
+# Версия: 3.1 (категории + редактирование + фильтры + журнал изменений)
 
 import streamlit as st
 import pandas as pd
@@ -11,7 +11,6 @@ def normalize_date(date_str):
     if not date_str:
         return None
     date_str = str(date_str).strip()[:10]
-    
     for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d-%m-%Y", "%Y.%m.%d"):
         try:
             return datetime.strptime(date_str, fmt).strftime("%Y-%m-%d")
@@ -39,6 +38,27 @@ def clean_comment(comment: str) -> str:
     return comment
 
 
+def get_user_name():
+    user = st.session_state.get("user", {})
+    return user.get("name") or user.get("role") or "Неизвестный"
+
+
+def write_audit(action, table_name, record_id, old_data=None, new_data=None, comment=""):
+    """Пишет запись в журнал изменений"""
+    try:
+        supabase.table("audit_log").insert({
+            "user_name": get_user_name(),
+            "action": action,
+            "table_name": table_name,
+            "record_id": str(record_id) if record_id is not None else None,
+            "old_data": old_data,
+            "new_data": new_data,
+            "comment": comment
+        }).execute()
+    except Exception as e:
+        st.warning(f"Не удалось записать в журнал: {e}")
+
+
 def show_cash_page():
     st.header("💵 Состояние кассы магазина")
     
@@ -59,7 +79,6 @@ def show_cash_page():
     manual_cash_flow = sum(float(op.get('amount', 0)) for op in ops_data)
     current_cash_in_hand = full_cash_sales + manual_cash_flow
 
-    # Считаем расходы по категориям
     needs_expense = 0.0
     supplier_expense = 0.0
     for op in ops_data:
@@ -74,7 +93,7 @@ def show_cash_page():
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("💵 Наличные в кассе", f"{current_cash_in_hand:,.0f} сом")
-    c2.metric("📝 Долг клиентов", 
+    c2.metric("📝 Долг клиентов",
               f"{sum(float(s.get('credit_balance', 0) or 0) for s in sales_data if s.get('payment') == 'Рассрочка'):,.0f} сом")
     c3.metric("🏪 Расходы на нужды", f"{needs_expense:,.0f} сом")
     c4.metric("🚚 Выплаты поставщикам", f"{supplier_expense:,.0f} сом")
@@ -110,7 +129,6 @@ def show_cash_page():
 
     if all_ops:
         df_all = pd.DataFrame(all_ops)
-        
         daily = df_all.groupby('day').agg({
             'cash_sales': 'sum',
             'inflow': 'sum',
@@ -144,7 +162,7 @@ def show_cash_page():
     else:
         st.info("Пока нет операций для расчёта.")
 
-        # ==================== ИСТОРИЯ ОПЕРАЦИЙ ====================
+    # ==================== ИСТОРИЯ ОПЕРАЦИЙ ====================
     st.markdown("---")
     st.subheader("📜 История кассовых операций")
 
@@ -163,7 +181,6 @@ def show_cash_page():
             df_ops['date_obj'] = pd.to_datetime(df_ops['date_norm'], errors='coerce').dt.date
             df_ops['category'] = df_ops['comment'].apply(get_category_from_comment)
             filtered_ops = df_ops[(df_ops['date_obj'] >= start_date) & (df_ops['date_obj'] <= end_date)].copy()
-            
             if filter_cat != "Все":
                 filtered_ops = filtered_ops[filtered_ops['category'] == filter_cat]
         except:
@@ -183,11 +200,8 @@ def show_cash_page():
         })
         st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-        # ===== ИТОГИ =====
         total_sum = filtered_ops["amount"].sum()
         count_ops = len(filtered_ops)
-        
-        # Разбивка по категориям внутри текущего фильтра
         needs_sum = filtered_ops[filtered_ops["category"] == "Нужды магазина"]["amount"].sum()
         supplier_sum = filtered_ops[filtered_ops["category"] == "Оплата контрагенту"]["amount"].sum()
         other_sum = filtered_ops[filtered_ops["category"] == "Без категории"]["amount"].sum()
@@ -203,7 +217,6 @@ def show_cash_page():
 
         if other_sum != 0:
             st.caption(f"Без категории: {other_sum:,.0f} сом")
-
     else:
         st.info("Операций за выбранный период нет.")
 
@@ -219,7 +232,6 @@ def show_cash_page():
         selected_label = st.selectbox("Выберите операцию", list(options.keys()), key="edit_op_select")
         selected_id = options[selected_label]
         
-        # Находим полные данные
         selected_op = next((op for op in ops_data if op["id"] == selected_id), None)
         
         if selected_op:
@@ -231,13 +243,13 @@ def show_cash_page():
                 new_cat = st.selectbox(
                     "Тип расхода",
                     ["Нужды магазина", "Оплата контрагенту", "Без категории"],
-                    index=["Нужды магазина", "Оплата контрагенту", "Без категории"].index(current_cat) if current_cat in ["Нужды магазина", "Оплата контрагенту", "Без категории"] else 2
+                    index=["Нужды магазина", "Оплата контрагенту", "Без категории"].index(current_cat)
+                    if current_cat in ["Нужды магазина", "Оплата контрагенту", "Без категории"] else 2
                 )
                 
-                # Сумма всегда показываем как положительную для удобства
                 new_amount_abs = st.number_input(
-                    "Сумма (сом)", 
-                    min_value=0.0, 
+                    "Сумма (сом)",
+                    min_value=0.0,
                     value=abs(current_amount),
                     step=100.0
                 )
@@ -251,7 +263,6 @@ def show_cash_page():
                     delete_btn = st.form_submit_button("🗑️ Удалить операцию")
 
                 if save_btn:
-                    # Формируем новый комментарий с префиксом
                     if new_cat == "Нужды магазина":
                         final_comment = f"[НУЖДЫ] {new_comment}".strip()
                     elif new_cat == "Оплата контрагенту":
@@ -259,23 +270,55 @@ def show_cash_page():
                     else:
                         final_comment = new_comment
 
-                    # Сохраняем сумму как отрицательную (это расход)
                     final_amount = -abs(new_amount_abs)
+
+                    old_data = {
+                        "date": selected_op.get("date"),
+                        "amount": selected_op.get("amount"),
+                        "comment": selected_op.get("comment")
+                    }
+                    new_data = {
+                        "date": selected_op.get("date"),
+                        "amount": final_amount,
+                        "comment": final_comment
+                    }
 
                     try:
                         supabase.table("cash_operations").update({
                             "amount": final_amount,
                             "comment": final_comment
                         }).eq("id", selected_id).execute()
-                        st.success("Операция обновлена!")
+
+                        write_audit(
+                            action="UPDATE",
+                            table_name="cash_operations",
+                            record_id=selected_id,
+                            old_data=old_data,
+                            new_data=new_data,
+                            comment="Редактирование кассовой операции"
+                        )
+                        st.success("Операция обновлена! Старые данные сохранены в журнале.")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Ошибка: {e}")
 
                 if delete_btn:
+                    old_data = {
+                        "date": selected_op.get("date"),
+                        "amount": selected_op.get("amount"),
+                        "comment": selected_op.get("comment")
+                    }
                     try:
                         supabase.table("cash_operations").delete().eq("id", selected_id).execute()
-                        st.success("Операция удалена!")
+                        write_audit(
+                            action="DELETE",
+                            table_name="cash_operations",
+                            record_id=selected_id,
+                            old_data=old_data,
+                            new_data=None,
+                            comment="Удаление кассовой операции"
+                        )
+                        st.success("Операция удалена! Данные сохранены в журнале.")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Ошибка удаления: {e}")
@@ -291,8 +334,10 @@ def show_cash_page():
         ])
         
         amount = st.number_input("Сумма, сом", min_value=1.0, value=1000.0, step=100.0)
-        comment = st.text_input("Комментарий / Причина", 
-                                placeholder="Например: Инкассация / Оплата за партию холодильников")
+        comment = st.text_input(
+            "Комментарий / Причина",
+            placeholder="Например: Инкассация / Оплата за партию холодильников"
+        )
 
         if st.form_submit_button("Списать из кассы", type="primary"):
             if op_type == "Нужды магазина":
@@ -300,10 +345,71 @@ def show_cash_page():
             else:
                 final_comment = f"[ПОСТАВЩИК] {comment}".strip()
 
-            supabase.table("cash_operations").insert({
+            new_row = {
                 "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "amount": -amount,
                 "comment": final_comment
-            }).execute()
-            st.success("✅ Расход зафиксирован!")
-            st.rerun()
+            }
+
+            try:
+                res = supabase.table("cash_operations").insert(new_row).execute()
+                new_id = res.data[0]["id"] if res.data else None
+
+                write_audit(
+                    action="CREATE",
+                    table_name="cash_operations",
+                    record_id=new_id,
+                    old_data=None,
+                    new_data=new_row,
+                    comment="Создан расход из кассы"
+                )
+                st.success("✅ Расход зафиксирован и записан в журнал!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Ошибка: {e}")
+
+    # ==================== ЖУРНАЛ ИЗМЕНЕНИЙ ====================
+    st.markdown("---")
+    st.subheader("📋 Журнал изменений (касса)")
+
+    try:
+        audit_res = (
+            supabase.table("audit_log")
+            .select("*")
+            .eq("table_name", "cash_operations")
+            .order("created_at", desc=True)
+            .limit(100)
+            .execute()
+        )
+        if not audit_res.data:
+            st.info("Журнал пока пуст. После создания / изменения / удаления операций здесь появятся записи.")
+        else:
+            rows = []
+            for a in audit_res.data:
+                old_amount = None
+                new_amount = None
+                old_comment = None
+                new_comment = None
+
+                if a.get("old_data") and isinstance(a["old_data"], dict):
+                    old_amount = a["old_data"].get("amount")
+                    old_comment = a["old_data"].get("comment")
+                if a.get("new_data") and isinstance(a["new_data"], dict):
+                    new_amount = a["new_data"].get("amount")
+                    new_comment = a["new_data"].get("comment")
+
+                rows.append({
+                    "Когда": str(a.get("created_at", ""))[:19],
+                    "Кто": a.get("user_name", ""),
+                    "Действие": a.get("action", ""),
+                    "ID": a.get("record_id", ""),
+                    "Было (сумма)": old_amount,
+                    "Стало (сумма)": new_amount,
+                    "Было (коммент)": old_comment,
+                    "Стало (коммент)": new_comment,
+                    "Примечание": a.get("comment", "")
+                })
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    except Exception as e:
+        st.error(f"Не удалось загрузить журнал: {e}")
+        st.info("Проверь, что таблица audit_log создана в Supabase.")
