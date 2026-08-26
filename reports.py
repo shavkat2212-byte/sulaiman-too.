@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Отчеты
-# Версия: 2.3 (расходы + чистый доход + экспорт)
+# Версия: 2.4 (прибыль с наценкой по рассрочке)
 
 import streamlit as st
 import pandas as pd
@@ -80,7 +80,6 @@ def show_reports_page():
         amount = float(op.get("amount", 0) or 0)
         if amount >= 0:
             continue
-        # Парсим дату операции
         op_day = None
         try:
             d_str = str(op.get("date", ""))[:10]
@@ -121,7 +120,7 @@ def show_reports_page():
             credit_profit += (down + bal) - cost
 
     total_profit = cash_profit + credit_profit
-    net_income = total_profit - needs_expense   # Чистый доход
+    net_income = total_profit - needs_expense
 
     st.markdown("---")
     if user_role == "Администратор":
@@ -208,17 +207,32 @@ def show_reports_page():
 
     report_display = []
     for _, row in filtered_df.iterrows():
+        total_sale = float(row.get('total_sale', 0) or 0)
+        total_cost = float(row.get('total_cost', 0) or 0)
+        down = float(row.get('down_payment', 0) or 0)
+        credit_balance = float(row.get('credit_balance', 0) or 0)
+        base_profit = float(row.get('profit', 0) or 0)
+        if not base_profit:
+            base_profit = total_sale - total_cost
+
+        # Прибыль с учётом наценки (для рассрочки)
+        if row.get('payment') == 'Рассрочка':
+            profit_with_markup = (down + credit_balance) - total_cost
+        else:
+            profit_with_markup = base_profit
+
         item = {
             "Дата": format_date_to_ddmmyyyy(row['date'], include_time=True),
             "Наименование": fix_contract_name_on_fly(row['name'], row['date']),
             "Кол-во": int(row['qty']),
             "Тип оплаты": row['payment'],
-            "Сумма": int(row['total_sale']),
-            "Закупка": int(row.get('total_cost', 0)),
-            "Прибыль": int(row.get('profit', 0)),
+            "Сумма": int(total_sale),
+            "Закупка": int(total_cost),
+            "Прибыль": int(base_profit),
+            "Прибыль с наценкой": int(profit_with_markup),
             "sale_id": row['id'],
             "raw_payment": row['payment'],
-            "down_payment": int(row.get('down_payment', 0) or 0),
+            "down_payment": int(down),
             "pure_name": row.get('pure_name', ''),
             "batch_date": row.get('batch_date', ''),
             "qty_raw": int(row.get('qty', 0))
@@ -226,8 +240,14 @@ def show_reports_page():
         report_display.append(item)
 
     df_display = pd.DataFrame(report_display)
-    st.dataframe(df_display.drop(columns=["sale_id", "raw_payment", "down_payment", "pure_name", "batch_date", "qty_raw"], errors="ignore"),
-                 use_container_width=True, hide_index=True)
+    st.dataframe(
+        df_display.drop(
+            columns=["sale_id", "raw_payment", "down_payment", "pure_name", "batch_date", "qty_raw"],
+            errors="ignore"
+        ),
+        use_container_width=True,
+        hide_index=True
+    )
 
     # ===== РЕДАКТИРОВАНИЕ (Админ) =====
     if user_role == "Администратор":
@@ -439,14 +459,13 @@ def show_reports_page():
                 except Exception as e:
                     st.error(f"Критическая ошибка при отмене: {e}")
 
-      # =========================================================================
+    # =========================================================================
     # ДВИЖЕНИЕ СКЛАДА (принято / ушло / остаток)
     # =========================================================================
     if user_role == "Администратор":
         st.markdown("---")
         st.subheader("📦 Движение склада (принято / ушло / остаток)")
 
-        # --- Текущий остаток склада (как на странице Склад) ---
         try:
             products_res = supabase.table("products").select("*").execute()
             products = products_res.data or []
@@ -464,7 +483,6 @@ def show_reports_page():
                 current_stock_qty += qty
                 current_stock_cost += qty * cost
 
-        # --- Всего ушло (продажи по себестоимости) ---
         total_sold_qty = 0
         total_sold_cost = 0.0
         expense_by_day = {}
@@ -482,11 +500,9 @@ def show_reports_page():
             expense_by_day[day]["qty"] += qty
             expense_by_day[day]["cost"] += cost
 
-        # --- Примерно всего принято ---
         estimated_received_qty = current_stock_qty + total_sold_qty
         estimated_received_cost = current_stock_cost + total_sold_cost
 
-        # --- Метрики ---
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("📥 Всего принято (примерно)", f"{estimated_received_qty:,} шт")
         m2.metric("📥 Всего принято (себест.)", f"{estimated_received_cost:,.0f} сом")
@@ -495,7 +511,6 @@ def show_reports_page():
 
         st.caption(f"Остаток в штуках: **{current_stock_qty:,} шт.** (должно совпадать со страницей «Склад»)")
 
-        # --- Таблица ухода по дням ---
         st.markdown("#### 📅 Уход товара по дням (по себестоимости)")
 
         if expense_by_day:
@@ -523,3 +538,26 @@ def show_reports_page():
             )
         else:
             st.info("Продаж пока не было.")
+
+
+def show_supplier_page():
+    user_role = st.session_state.get("user", {}).get("role", "Кассир")
+    if user_role != "Администратор":
+        return
+        
+    st.header("Выплаты поставщикам и контрагентам")
+    with st.form("supplier_payment"):
+        supplier = st.text_input("Название контрагента")
+        amount = st.number_input("Сумма выплаты", min_value=1.0, value=1000.0)
+        comment = st.text_input("Комментарий")
+        if st.form_submit_button("Зафиксировать выплату"):
+            if supplier:
+                now_formatted = datetime.now().strftime("%d.%m.%Y %H:%M")
+                supabase.table("supplier_payments").insert({
+                    "date": now_formatted, 
+                    "supplier": supplier.strip(), 
+                    "amount": amount, 
+                    "comment": comment
+                }).execute()
+                st.success("Выплата отправлена!")
+                st.rerun()
