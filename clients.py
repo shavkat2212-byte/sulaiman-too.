@@ -476,7 +476,9 @@ def show_clients_page():
                 "Статус": "🔴 ПРОСРОЧКА" if due < today else "🟡 Сегодня",
                 "due_obj": due,
                 "sale_id": p.get("sale_id"),
-                "payment_id": p.get("id")
+                "payment_id": p.get("id"),
+                "amount_expected": expected,
+                "amount_paid": paid
             }
 
             if due < today:
@@ -486,11 +488,45 @@ def show_clients_page():
             elif due == today:
                 today_list.append(row)
 
+        def accept_payment(row, pay_amount):
+            if pay_amount <= 0:
+                st.error("Введите сумму больше 0")
+                return
+            new_paid = float(row["amount_paid"]) + float(pay_amount)
+            new_status = "Оплачен" if new_paid >= float(row["amount_expected"]) else "Частично"
+            now_fmt = datetime.now().strftime("%d.%m.%Y %H:%M")
+            supabase.table("credit_payments").update({
+                "amount_paid": new_paid,
+                "status": new_status
+            }).eq("id", row["payment_id"]).execute()
+            supabase.table("cash_operations").insert({
+                "date": now_fmt,
+                "amount": float(pay_amount),
+                "comment": f"Погашение рассрочки от {row['Клиент']}"
+            }).execute()
+            st.success(f"Принято {int(pay_amount)} сом от {row['Клиент']}")
+            st.rerun()
+
         st.markdown("### 🟡 Должны оплатить сегодня")
         if today_list:
-            df_today = pd.DataFrame(today_list).drop(columns=["due_obj", "sale_id", "payment_id"], errors="ignore")
-            st.dataframe(df_today, use_container_width=True, hide_index=True)
             st.metric("Сумма к получению сегодня", f"{sum(r['Осталось'] for r in today_list):,} сом")
+            for row in today_list:
+                with st.container():
+                    c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
+                    c1.write(f"**{row['Клиент']}**")
+                    c1.caption(f"{row['Телефон']} | {row['Дата платежа']}")
+                    c2.write(f"Ожидается: **{row['Ожидается']:,}**")
+                    c3.write(f"Осталось: **{row['Осталось']:,}**")
+                    pay_val = c4.number_input(
+                        "Сумма",
+                        min_value=0.0,
+                        value=float(row["Осталось"]),
+                        step=100.0,
+                        key=f"today_pay_{row['payment_id']}"
+                    )
+                    if c4.button("💳 Принять", key=f"today_btn_{row['payment_id']}", use_container_width=True):
+                        accept_payment(row, pay_val)
+                st.divider()
         else:
             st.success("На сегодня платежей нет.")
 
@@ -498,9 +534,24 @@ def show_clients_page():
         st.markdown("### 🔴 Просроченные платежи")
         if overdue_list:
             overdue_list = sorted(overdue_list, key=lambda x: x["due_obj"])
-            df_over = pd.DataFrame(overdue_list).drop(columns=["due_obj", "sale_id", "payment_id"], errors="ignore")
-            st.dataframe(df_over, use_container_width=True, hide_index=True)
             st.error(f"Всего просрочено: **{sum(r['Осталось'] for r in overdue_list):,} сом** у {len(overdue_list)} платежей")
+            for row in overdue_list:
+                with st.container():
+                    c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
+                    c1.write(f"**{row['Клиент']}**")
+                    c1.caption(f"{row['Телефон']} | {row['Дата платежа']} | {row['Статус']}")
+                    c2.write(f"Ожидается: **{row['Ожидается']:,}**")
+                    c3.write(f"Осталось: **{row['Осталось']:,}**")
+                    pay_val = c4.number_input(
+                        "Сумма",
+                        min_value=0.0,
+                        value=float(row["Осталось"]),
+                        step=100.0,
+                        key=f"over_pay_{row['payment_id']}"
+                    )
+                    if c4.button("💳 Принять", key=f"over_btn_{row['payment_id']}", use_container_width=True):
+                        accept_payment(row, pay_val)
+                st.divider()
         else:
             st.success("Просроченных платежей нет.")
 
@@ -508,8 +559,6 @@ def show_clients_page():
             st.markdown("---")
             st.subheader("🛠️ Исправление неправильных графиков")
             st.warning(f"Найдено **{len(overdue_sale_ids)}** договоров с просроченными датами.")
-            st.info("Кнопка удалит старые графики и создаст новые с текущего месяца.")
-
             if st.button("📅 Исправить все просроченные графики", type="primary"):
                 fixed = 0
                 errors = []
@@ -580,6 +629,5 @@ def show_clients_page():
         if sales_without_schedule:
             st.warning(f"Найдено **{len(sales_without_schedule)}** договоров без графика:")
             st.dataframe(pd.DataFrame(sales_without_schedule), use_container_width=True, hide_index=True)
-            st.info("Зайди в карточку клиента → Редактирование → «Пересоздать график»")
         else:
             st.success("✅ У всех договоров рассрочки есть график платежей.")
