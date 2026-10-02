@@ -1,9 +1,9 @@
 # Магазин «Сулайман-Тоо» — Модуль: Продажи
-# Версия: 1.4 (новый клиент в продаже + день платежа в графике)
+# Версия: 1.5 (удаление позиции из корзины)
 
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 from database import supabase
 
 
@@ -19,8 +19,10 @@ def add_months(start_date, months, pay_day):
 
 def show_sales_page():
     st.header("Оформить продажу (Корзина покупок)")
+    if "cart" not in st.session_state:
+        st.session_state.cart = []
+
     stock_res = supabase.table("products").select("*").gt("qty", 0).execute()
-    clients_res = supabase.table("clients").select("*").order("fio").execute()
 
     if not stock_res.data:
         st.warning("На складе нет доступных товаров для продажи")
@@ -35,7 +37,7 @@ def show_sales_page():
 
         def format_batch_date(d_str):
             try:
-                return datetime.strptime(d_str, '%Y-%m-%d').strftime('%d.%m.%Y')
+                return datetime.strptime(d_str, "%Y-%m-%d").strftime("%d.%m.%Y")
             except:
                 return d_str
 
@@ -43,12 +45,16 @@ def show_sales_page():
             f"Поступление от {format_batch_date(row['date'])} (Остаток: {row['qty']} шт.)": row["id"]
             for row in stock_res.data if row["name"] == p_key
         }
+        if not batches_options:
+            st.warning("Нет партий этого товара")
+            return
+
         selected_batch_label = st.selectbox("📦 Выберите партию", list(batches_options.keys()))
         batch_id = batches_options[selected_batch_label]
         chosen_batch = supabase.table("products").select("*").eq("id", batch_id).execute().data[0]
 
         sqty = st.number_input("Количество для продажи", min_value=1, max_value=int(chosen_batch["qty"]), value=1)
-        custom_price = st.number_input("💰 Цена за 1 шт, сом", min_value=0.0, value=float(chosen_batch['price']))
+        custom_price = st.number_input("💰 Цена за 1 шт, сом", min_value=0.0, value=float(chosen_batch["price"]))
         st.caption(f"ℹ️ Закупочная цена (себестоимость): {int(chosen_batch['cost'])} сом")
 
         if st.button("➕ Добавить в чек", use_container_width=True):
@@ -71,10 +77,15 @@ def show_sales_page():
             st.info("Чек пока пуст.")
             total_cart_sum = 0.0
         else:
-            cart_df = pd.DataFrame(st.session_state.cart)
-            cart_df["Закупка (1 шт)"] = cart_df["cost"].astype(int)
-            st.dataframe(cart_df[["name", "qty", "price", "Закупка (1 шт)", "total"]], use_container_width=True, hide_index=True)
-            total_cart_sum = cart_df["total"].sum()
+            total_cart_sum = 0.0
+            for i, item in enumerate(st.session_state.cart):
+                c1, c2 = st.columns([4, 1])
+                c1.write(f"**{item['name']}** × {int(item['qty'])} = {item['total']:,.0f} сом")
+                if c2.button("✖", key=f"del_cart_{i}", help="Удалить позицию"):
+                    st.session_state.cart.pop(i)
+                    st.rerun()
+                total_cart_sum += float(item["total"])
+
             st.markdown(f"### 💵 Сумма по чеку: {total_cart_sum:,.2f} сом")
             if st.button("🗑️ Очистить чек"):
                 st.session_state.cart = []
@@ -115,7 +126,7 @@ def show_sales_page():
                     if not new_fio:
                         st.error("Укажите ФИО")
                     else:
-                        res = supabase.table("clients").insert({
+                        supabase.table("clients").insert({
                             "fio": new_fio,
                             "phone": new_phone if new_phone else None,
                             "address": new_address if new_address else None,
@@ -198,9 +209,9 @@ def show_sales_page():
                     t_cost = item["qty"] * item["cost"]
                     unique_sale_id = f"{base_group_id}_{idx}"
                     try:
-                        b_date_formatted = datetime.strptime(item['batch_date'], '%Y-%m-%d').strftime('%d.%m.%Y')
+                        b_date_formatted = datetime.strptime(item["batch_date"], "%Y-%m-%d").strftime("%d.%m.%Y")
                     except:
-                        b_date_formatted = item['batch_date']
+                        b_date_formatted = item["batch_date"]
 
                     supabase.table("sales").insert({
                         "id": unique_sale_id,
