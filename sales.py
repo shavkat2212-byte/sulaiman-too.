@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Продажи
-# Версия: 1.5 (удаление позиции из корзины)
+# Версия: 1.6 (поиск товара и правка количества в чеке)
 
 import streamlit as st
 import pandas as pd
@@ -28,48 +28,63 @@ def show_sales_page():
         st.warning("На складе нет доступных товаров для продажи")
         return
 
+    stock_by_id = {row["id"]: row for row in stock_res.data}
+
     col_form, col_cart = st.columns([1.2, 1])
     with col_form:
         st.subheader("🛒 Выбор товаров")
-        unique_names = sorted(list(set(row["name"].capitalize() for row in stock_res.data)))
-        sel_display = st.selectbox("🔍 Выберите товар", unique_names)
-        p_key = sel_display.lower()
+        search = st.text_input("Найти товар по названию", placeholder="например: iphone, холодильник", key="sale_product_search")
+        names = {}
+        for row in stock_res.data:
+            title = str(row.get("name") or "").strip()
+            if not title:
+                continue
+            if search and search.strip().lower() not in title.lower():
+                continue
+            names[title.capitalize()] = title.lower()
+        unique_names = sorted(names.keys())
+        if not unique_names:
+            st.warning("Такого товара на складе нет.")
+        else:
+            st.caption(f"Найдено товаров: {len(unique_names)}")
+            sel_display = st.selectbox("Выберите товар", unique_names)
+            p_key = names[sel_display]
 
-        def format_batch_date(d_str):
-            try:
-                return datetime.strptime(d_str, "%Y-%m-%d").strftime("%d.%m.%Y")
-            except:
-                return d_str
+            def format_batch_date(d_str):
+                try:
+                    return datetime.strptime(str(d_str)[:10], "%Y-%m-%d").strftime("%d.%m.%Y")
+                except Exception:
+                    return str(d_str)
 
-        batches_options = {
-            f"Поступление от {format_batch_date(row['date'])} (Остаток: {row['qty']} шт.)": row["id"]
-            for row in stock_res.data if row["name"] == p_key
-        }
-        if not batches_options:
-            st.warning("Нет партий этого товара")
-            return
+            batches_options = {
+                f"Поступление от {format_batch_date(row['date'])} (Остаток: {row['qty']} шт.)": row["id"]
+                for row in stock_res.data if row["name"] == p_key
+            }
+            if not batches_options:
+                st.warning("Нет партий этого товара")
+            else:
+                selected_batch_label = st.selectbox("📦 Выберите партию", list(batches_options.keys()))
+                batch_id = batches_options[selected_batch_label]
+                chosen_batch = stock_by_id.get(batch_id) or supabase.table("products").select("*").eq("id", batch_id).execute().data[0]
 
-        selected_batch_label = st.selectbox("📦 Выберите партию", list(batches_options.keys()))
-        batch_id = batches_options[selected_batch_label]
-        chosen_batch = supabase.table("products").select("*").eq("id", batch_id).execute().data[0]
+                sqty = st.number_input("Количество для продажи", min_value=1, max_value=int(chosen_batch["qty"]), value=1)
+                custom_price = st.number_input("💰 Цена за 1 шт, сом", min_value=0.0, value=float(chosen_batch["price"]))
+                st.caption(f"Закупка: {int(chosen_batch['cost'])} сом | На складе: {int(chosen_batch['qty'])} шт.")
 
-        sqty = st.number_input("Количество для продажи", min_value=1, max_value=int(chosen_batch["qty"]), value=1)
-        custom_price = st.number_input("💰 Цена за 1 шт, сом", min_value=0.0, value=float(chosen_batch["price"]))
-        st.caption(f"ℹ️ Закупочная цена (себестоимость): {int(chosen_batch['cost'])} сом")
-
-        if st.button("➕ Добавить в чек", use_container_width=True):
-            st.session_state.cart.append({
-                "batch_id": batch_id,
-                "name": sel_display,
-                "batch_date": chosen_batch["date"],
-                "qty": sqty,
-                "price": custom_price,
-                "total": sqty * custom_price,
-                "cost": float(chosen_batch["cost"]),
-                "pure_name": p_key
-            })
-            st.success("Товар добавлен в чек!")
-            st.rerun()
+                if st.button("➕ Добавить в чек", use_container_width=True):
+                    st.session_state.cart.append({
+                        "batch_id": batch_id,
+                        "name": sel_display,
+                        "batch_date": chosen_batch["date"],
+                        "qty": int(sqty),
+                        "price": float(custom_price),
+                        "total": int(sqty) * float(custom_price),
+                        "cost": float(chosen_batch["cost"]),
+                        "pure_name": p_key,
+                        "max_qty": int(chosen_batch["qty"]),
+                    })
+                    st.success("Товар добавлен в чек!")
+                    st.rerun()
 
     with col_cart:
         st.subheader("🧾 Текущий чек (Корзина)")
@@ -78,12 +93,25 @@ def show_sales_page():
             total_cart_sum = 0.0
         else:
             total_cart_sum = 0.0
-            for i, item in enumerate(st.session_state.cart):
-                c1, c2 = st.columns([4, 1])
-                c1.write(f"**{item['name']}** × {int(item['qty'])} = {item['total']:,.0f} сом")
-                if c2.button("✖", key=f"del_cart_{i}", help="Удалить позицию"):
+            for i, item in enumerate(list(st.session_state.cart)):
+                max_qty = int(item.get("max_qty") or item.get("qty") or 1)
+                c1, c2, c3 = st.columns([3, 1.2, 0.8])
+                c1.write(f"**{item['name']}**")
+                new_qty = c2.number_input(
+                    "Шт",
+                    min_value=1,
+                    max_value=max(max_qty, 1),
+                    value=int(item["qty"]),
+                    key=f"cart_qty_{i}",
+                )
+                if c3.button("✖", key=f"del_cart_{i}", help="Удалить позицию"):
                     st.session_state.cart.pop(i)
                     st.rerun()
+                if int(new_qty) != int(item["qty"]):
+                    item["qty"] = int(new_qty)
+                    item["total"] = int(new_qty) * float(item["price"])
+                    st.session_state.cart[i] = item
+                c1.caption(f"{int(item['qty'])} × {int(item['price'])} = {item['total']:,.0f} сом")
                 total_cart_sum += float(item["total"])
 
             st.markdown(f"### 💵 Сумма по чеку: {total_cart_sum:,.2f} сом")
@@ -198,6 +226,9 @@ def show_sales_page():
             for item in st.session_state.cart:
                 p_res = supabase.table("products").select("qty").eq("id", item["batch_id"]).execute().data[0]
                 new_qty = int(p_res["qty"]) - item["qty"]
+                if new_qty < 0:
+                    st.error(f"Не хватает товара: {item['name']}")
+                    return
                 supabase.table("products").update({"qty": new_qty}).eq("id", item["batch_id"]).execute()
                 total_cost_sum += (item["qty"] * item["cost"])
                 items_list_str.append(f"{item['name']} ({item['qty']} шт.)")
@@ -209,8 +240,8 @@ def show_sales_page():
                     t_cost = item["qty"] * item["cost"]
                     unique_sale_id = f"{base_group_id}_{idx}"
                     try:
-                        b_date_formatted = datetime.strptime(item["batch_date"], "%Y-%m-%d").strftime("%d.%m.%Y")
-                    except:
+                        b_date_formatted = datetime.strptime(str(item["batch_date"])[:10], "%Y-%m-%d").strftime("%d.%m.%Y")
+                    except Exception:
                         b_date_formatted = item["batch_date"]
 
                     supabase.table("sales").insert({
