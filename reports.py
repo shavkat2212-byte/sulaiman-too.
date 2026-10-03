@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Отчеты
-# Версия: 2.5 (полный сводный отчет + рассрочки по клиентам)
+# Версия: 2.6 (чеки по дате и поиск)
 
 import streamlit as st
 import pandas as pd
@@ -423,6 +423,21 @@ def show_reports_page():
 
         st.markdown("---")
         st.subheader("📋 Список оформленных чеков")
+        find_sale = st.text_input("Найти продажу по товару, клиенту или дате", key="find_sale_text")
+
+        def sale_sort_dt(value):
+            text_dt = str(value or "").strip()
+            for fmt in ("%d.%m.%Y %H:%M", "%d.%m.%Y", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+                try:
+                    return datetime.strptime(text_dt[:19], fmt)
+                except Exception:
+                    continue
+            day = parse_day(text_dt)
+            return datetime.combine(day, datetime.min.time()) if day else datetime.min
+
+        filtered_df = filtered_df.copy()
+        filtered_df["_sort_dt"] = filtered_df["date"].apply(sale_sort_dt)
+        filtered_df = filtered_df.sort_values("_sort_dt", ascending=False)
 
         report_display = []
         for _, row in filtered_df.iterrows():
@@ -439,8 +454,9 @@ def show_reports_page():
             else:
                 profit_with_markup = base_profit
 
+            shown_date = row["_sort_dt"].strftime("%d.%m.%Y %H:%M") if row["_sort_dt"] != datetime.min else format_date_to_ddmmyyyy(row['date'], include_time=True)
             report_display.append({
-                "Дата": format_date_to_ddmmyyyy(row['date'], include_time=True),
+                "Дата": shown_date,
                 "Наименование": fix_contract_name_on_fly(row['name'], row['date']),
                 "Кол-во": int(row['qty']),
                 "Тип оплаты": row['payment'],
@@ -457,6 +473,17 @@ def show_reports_page():
             })
 
         df_display = pd.DataFrame(report_display)
+        if find_sale:
+            q = find_sale.strip().lower()
+            df_display = df_display[
+                df_display["Наименование"].astype(str).str.lower().str.contains(q, na=False)
+                | df_display["Дата"].astype(str).str.lower().str.contains(q, na=False)
+                | df_display["Тип оплаты"].astype(str).str.lower().str.contains(q, na=False)
+            ].copy()
+        if df_display.empty:
+            st.info("По этому поиску продаж нет.")
+        else:
+            st.caption(f"Найдено чеков: {len(df_display)}. Сверху самые новые.")
         st.dataframe(
             df_display.drop(
                 columns=["sale_id", "raw_payment", "down_payment", "pure_name", "batch_date", "qty_raw"],
