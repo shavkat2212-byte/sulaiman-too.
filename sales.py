@@ -1,6 +1,7 @@
 # Магазин «Сулайман-Тоо» — Модуль: Продажи
-# Версия: 1.6 (поиск товара и правка количества в чеке)
+# Версия: 1.7 (договор сразу в продаже)
 
+import os
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -17,8 +18,56 @@ def add_months(start_date, months, pay_day):
     return datetime(year, month, day).date()
 
 
+def build_sale_contract(number, sale_date, client, cart, total_cart_sum, down_payment, months, total_with_markup, schedule_preview):
+    template = "contract_template.docx"
+    if not os.path.exists(template):
+        st.error("Нет файла contract_template.docx")
+        return None
+    try:
+        from contract_generator import fill_contract
+    except Exception as e:
+        st.error(f"Не открылся генератор договора: {e}")
+        return None
+    goods = ", ".join(f"{item['name']} ({int(item['qty'])} шт.)" for item in cart)
+    qty = sum(int(item["qty"]) for item in cart) or 1
+    price = float(total_cart_sum)
+    schedule = []
+    balance = float(total_with_markup)
+    for row in schedule_preview:
+        amount = float(row["Сумма"])
+        balance = max(0.0, balance - amount)
+        schedule.append({"num": row["№"], "date": row["Дата платежа"], "amount": amount, "balance": balance})
+    total_for_doc = float(down_payment) + float(total_with_markup)
+    return fill_contract(
+        template_path=template,
+        contract_number=str(number),
+        contract_date=sale_date.strftime("%d.%m.%Y"),
+        client_name=client.get("fio", ""),
+        client_address=client.get("address") or "—",
+        client_passport=client.get("passport") or "—",
+        total_amount=total_for_doc,
+        months=int(months),
+        product_name=goods,
+        product_qty=qty,
+        product_price=price,
+        down_payment=float(down_payment),
+        schedule=schedule,
+    )
+
+
 def show_sales_page():
     st.header("Оформить продажу (Корзина покупок)")
+    if st.session_state.get("last_contract") and st.session_state["last_contract"].get("bytes"):
+        last = st.session_state["last_contract"]
+        st.success("Последний договор готов к печати.")
+        st.download_button(
+            "📄 Скачать последний договор",
+            data=last["bytes"],
+            file_name=last["name"],
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            key="last_contract_download",
+        )
+
     if "cart" not in st.session_state:
         st.session_state.cart = []
 
@@ -134,6 +183,9 @@ def show_sales_page():
     monthly_payment = 0
     total_with_markup = 0
     pay_day = sale_date.day if sale_date.day <= 28 else 28
+    client_opts = {}
+    sel_client_label = ""
+    schedule_preview = []
 
     if pay_method == "Рассрочка":
         st.markdown("#### 👤 Клиент")
@@ -209,6 +261,30 @@ def show_sales_page():
                 "Сумма": int(amount)
             })
         st.dataframe(pd.DataFrame(schedule_preview), use_container_width=True, hide_index=True)
+
+        if client_id:
+            client_row = client_opts[sel_client_label]
+            contract_preview_no = datetime.now().strftime("%d%m-%H%M")
+            doc_bytes = build_sale_contract(
+                contract_preview_no,
+                sale_date,
+                client_row,
+                st.session_state.cart,
+                total_cart_sum,
+                down_payment,
+                months,
+                total_with_markup,
+                schedule_preview,
+            )
+            if doc_bytes:
+                st.download_button(
+                    "📄 Скачать договор Word",
+                    data=doc_bytes,
+                    file_name=f"Dogovor_{contract_preview_no}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True,
+                )
+                st.caption("Можно скачать до оформления и проверить. После проведения кнопка останется сверху.")
 
     if st.button("🚀 Оформить и провести сделку", type="primary", use_container_width=True):
         if pay_method == "Рассрочка" and not client_id:
@@ -304,6 +380,22 @@ def show_sales_page():
                         "status": "Не оплачен"
                     }).execute()
 
+            if pay_method == "Рассрочка":
+                saved_client = client_opts.get(sel_client_label, {"fio": sel_client_name})
+                st.session_state["last_contract"] = {
+                    "name": f"Dogovor_{contract_num_suffix[:9]}.docx",
+                    "bytes": build_sale_contract(
+                        contract_num_suffix[:9],
+                        sale_date,
+                        saved_client,
+                        list(st.session_state.cart),
+                        total_cart_sum,
+                        down_payment,
+                        months,
+                        total_with_markup,
+                        schedule_preview,
+                    ),
+                }
             st.session_state.cart = []
             st.success("🎉 Сделка успешно проведена!")
             st.rerun()
