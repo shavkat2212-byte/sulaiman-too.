@@ -1,16 +1,51 @@
 # Магазин «Сулайман-Тоо» — Модуль: Инвентаризация
-# Версия: 1.1 (галочки пустые, отмечаем найденное)
+# Версия: 1.2 (галочки сохраняются в базу)
 
 import io
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from database import get_rows
+from database import supabase, get_rows
+
+
+def load_marks():
+    try:
+        rows = supabase.table("inventory_marks").select("*").execute().data or []
+        return {str(r.get("product_id")): bool(r.get("present")) for r in rows}
+    except Exception:
+        return None
+
+
+def save_mark(product_id, present):
+    supabase.table("inventory_marks").upsert({
+        "product_id": str(product_id),
+        "present": bool(present),
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    }).execute()
 
 
 def show_inventory_page():
     st.header("Инвентаризация склада")
-    st.caption("Галочки пустые. Ставь «Есть» только на товар, который нашёл. Потом скачай Excel.")
+    st.caption("Галочки пустые, пока сам не отметишь. Отметки сохраняются: можно закрыть телефон и продолжить.")
+
+    saved = load_marks()
+    if saved is None:
+        st.error("Таблица сверки ещё не создана. В Supabase открой SQL Editor и выполни этот текст:")
+        st.code(
+            "create table if not exists inventory_marks (\n"
+            "  product_id text primary key,\n"
+            "  present boolean default false,\n"
+            "  updated_at text\n"
+            ");",
+            language="sql",
+        )
+        saved = {}
+
+    if "inv_loaded" not in st.session_state:
+        st.session_state.inv_marks = dict(saved)
+        st.session_state.inv_loaded = True
+    elif "inv_marks" not in st.session_state:
+        st.session_state.inv_marks = dict(saved)
 
     try:
         rows = [r for r in get_rows("products") if int(r.get("qty") or 0) > 0]
@@ -22,9 +57,6 @@ def show_inventory_page():
     if not rows:
         st.info("На складе нет товаров.")
         return
-
-    if "inv_marks" not in st.session_state:
-        st.session_state.inv_marks = {}
 
     search = st.text_input("Найти товар", placeholder="холодильник, iphone", key="inv_search")
     only_found = st.checkbox("Показать только отмеченные", key="inv_only_found")
@@ -52,13 +84,22 @@ def show_inventory_page():
 
     b1, b2 = st.columns(2)
     if b1.button("Снять все галочки", use_container_width=True):
-        for row in rows:
-            st.session_state.inv_marks[str(row["id"])] = False
-        st.rerun()
-    if b2.button("Отметить все как есть", use_container_width=True):
-        for row in rows:
-            st.session_state.inv_marks[str(row["id"])] = True
-        st.rerun()
+        try:
+            for row in rows:
+                st.session_state.inv_marks[str(row["id"])] = False
+                save_mark(row["id"], False)
+            st.rerun()
+        except Exception as e:
+            st.error(f"Не сохранилось: {e}")
+    if b2.button("Новая сверка", use_container_width=True):
+        try:
+            for row in rows:
+                st.session_state.inv_marks[str(row["id"])] = False
+                save_mark(row["id"], False)
+            st.session_state.inv_loaded = True
+            st.rerun()
+        except Exception as e:
+            st.error(f"Не сохранилось: {e}")
 
     st.markdown("---")
     for row in visible:
@@ -72,7 +113,12 @@ def show_inventory_page():
         left.markdown(f"**{name}**")
         left.caption(f"{qty} шт. | партия {date} | {qty * cost:,.0f} сом")
         marked = right.checkbox("Есть", value=current, key=f"inv_{rid}")
-        st.session_state.inv_marks[rid] = marked
+        if marked != current:
+            st.session_state.inv_marks[rid] = marked
+            try:
+                save_mark(rid, marked)
+            except Exception as e:
+                st.error(f"Галочка не сохранилась: {e}")
 
     export_rows = []
     for row in rows:
