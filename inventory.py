@@ -5,7 +5,7 @@ import io
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from database import supabase
+from database import get_rows
 
 
 def show_inventory_page():
@@ -13,7 +13,8 @@ def show_inventory_page():
     st.caption("Галочки пустые. Ставь «Есть» только на товар, который нашёл. Потом скачай Excel.")
 
     try:
-        rows = supabase.table("products").select("*").gt("qty", 0).order("name").execute().data or []
+        rows = [r for r in get_rows("products") if int(r.get("qty") or 0) > 0]
+        rows.sort(key=lambda r: str(r.get("name") or ""))
     except Exception as e:
         st.error(f"Не удалось открыть склад: {e}")
         return
