@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Инвентаризация
-# Версия: 1.0 (список с телефона, галочки, Excel)
+# Версия: 1.1 (галочки пустые, отмечаем найденное)
 
 import io
 import streamlit as st
@@ -10,7 +10,7 @@ from database import supabase
 
 def show_inventory_page():
     st.header("Инвентаризация склада")
-    st.caption("Отмечай с телефона: товар на месте или нет. Потом скачай Excel.")
+    st.caption("Галочки пустые. Ставь «Есть» только на товар, который нашёл. Потом скачай Excel.")
 
     try:
         rows = supabase.table("products").select("*").gt("qty", 0).order("name").execute().data or []
@@ -26,37 +26,37 @@ def show_inventory_page():
         st.session_state.inv_marks = {}
 
     search = st.text_input("Найти товар", placeholder="холодильник, iphone", key="inv_search")
-    only_missing = st.checkbox("Показать только где нет", key="inv_only_missing")
+    only_found = st.checkbox("Показать только отмеченные", key="inv_only_found")
 
     visible = []
     for row in rows:
         name = str(row.get("name") or "").strip()
         if search and search.strip().lower() not in name.lower():
             continue
-        mark = st.session_state.inv_marks.get(str(row["id"]), True)
-        if only_missing and mark:
+        mark = bool(st.session_state.inv_marks.get(str(row["id"]), False))
+        if only_found and not mark:
             continue
         visible.append(row)
 
     total_qty = sum(int(r.get("qty") or 0) for r in rows)
     total_cost = sum(int(r.get("qty") or 0) * float(r.get("cost") or 0) for r in rows)
-    checked = sum(1 for r in rows if st.session_state.inv_marks.get(str(r["id"]), True))
-    missing = len(rows) - checked
+    found = sum(1 for r in rows if st.session_state.inv_marks.get(str(r["id"]), False))
+    not_found = len(rows) - found
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Позиций", f"{len(rows)}")
-    c2.metric("Есть", f"{checked}")
-    c3.metric("Нет", f"{missing}")
+    c2.metric("Отмечено", f"{found}")
+    c3.metric("Ещё не найдено", f"{not_found}")
     st.caption(f"Всего {total_qty} шт. на {total_cost:,.0f} сом по закупке")
 
     b1, b2 = st.columns(2)
-    if b1.button("Отметить все как есть", use_container_width=True):
-        for row in rows:
-            st.session_state.inv_marks[str(row["id"])] = True
-        st.rerun()
-    if b2.button("Снять все галочки", use_container_width=True):
+    if b1.button("Снять все галочки", use_container_width=True):
         for row in rows:
             st.session_state.inv_marks[str(row["id"])] = False
+        st.rerun()
+    if b2.button("Отметить все как есть", use_container_width=True):
+        for row in rows:
+            st.session_state.inv_marks[str(row["id"])] = True
         st.rerun()
 
     st.markdown("---")
@@ -66,7 +66,7 @@ def show_inventory_page():
         qty = int(row.get("qty") or 0)
         cost = float(row.get("cost") or 0)
         date = str(row.get("date") or "")[:10]
-        current = st.session_state.inv_marks.get(rid, True)
+        current = bool(st.session_state.inv_marks.get(rid, False))
         left, right = st.columns([4, 1])
         left.markdown(f"**{name}**")
         left.caption(f"{qty} шт. | партия {date} | {qty * cost:,.0f} сом")
@@ -79,7 +79,7 @@ def show_inventory_page():
         qty = int(row.get("qty") or 0)
         cost = float(row.get("cost") or 0)
         price = float(row.get("price") or 0)
-        present = st.session_state.inv_marks.get(rid, True)
+        present = bool(st.session_state.inv_marks.get(rid, False))
         export_rows.append({
             "Товар": str(row.get("name") or "").capitalize(),
             "Партия": str(row.get("date") or "")[:10],
@@ -89,10 +89,9 @@ def show_inventory_page():
             "Сумма закупки": int(qty * cost),
             "Цена продажи": int(price),
         })
-    export_df = pd.DataFrame(export_rows)
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        export_df.to_excel(writer, index=False, sheet_name="Инвентаризация")
+        pd.DataFrame(export_rows).to_excel(writer, index=False, sheet_name="Инвентаризация")
     buffer.seek(0)
     st.download_button(
         "Скачать инвентаризацию в Excel",
