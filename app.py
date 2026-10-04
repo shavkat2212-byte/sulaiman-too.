@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Главный модуль: Авторизация и Маршрутизация
-# Версия программы: 1.7.8 (кэш данных и кнопка обновления)
+# Версия программы: 1.7.9 (сверка сохраняется, архив продаж)
 
 import streamlit as st
 from utils import (
@@ -17,6 +17,10 @@ try:
     from inventory import show_inventory_page
 except Exception:
     show_inventory_page = lambda: st.title("Инвентаризация недоступна")
+try:
+    from shop_tools import show_archive_page
+except Exception:
+    show_archive_page = lambda: st.title("Архив недоступен")
 try:
     from cash import show_cash_page
 except Exception:
@@ -69,7 +73,9 @@ else:
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🛠️ Главное меню")
 
-menu_options = ["🛒 Продажи", "📦 Склад", "📋 Инвентаризация", "👥 Клиенты", "💵 Касса", "📊 Отчеты"]
+menu_options = ["🛒 Продажи", "📦 Склад", "📋 Инвентаризация", "📤 Архив", "👥 Клиенты", "💵 Касса", "📊 Отчеты"]
+if user_role != "Администратор":
+    menu_options = [item for item in menu_options if item != "📤 Архив"]
 if "menu_choice" not in st.session_state or st.session_state.menu_choice not in menu_options:
     st.session_state.menu_choice = "🛒 Продажи"
 
@@ -86,12 +92,14 @@ if st.sidebar.button("🔄 Обновить данные", use_container_width=T
     st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Магазин «Сулайман-Тоо» v1.7.8")
+st.sidebar.caption("Магазин «Сулайман-Тоо» v1.7.9")
 
 if choice == "📦 Склад":
     show_stock_page()
 elif choice == "📋 Инвентаризация":
     show_inventory_page()
+elif choice == "📤 Архив":
+    show_archive_page()
 elif choice == "🛒 Продажи":
     show_sales_page()
 elif choice == "👥 Клиенты":
