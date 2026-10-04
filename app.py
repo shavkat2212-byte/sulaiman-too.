@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Главный модуль: Авторизация и Маршрутизация
-# Версия программы: 1.7.7 (инвентаризация отдельным окном)
+# Версия программы: 1.7.8 (кэш данных и кнопка обновления)
 
 import streamlit as st
 from utils import (
@@ -8,7 +8,7 @@ from utils import (
     fix_contract_name_on_fly,
     get_batch_display_date
 )
-from database import authenticate_user, check_has_users, hash_password, supabase
+from database import authenticate_user, check_has_users, hash_password, supabase, clear_data_cache
 
 from stock import show_stock_page
 from sales import show_sales_page
@@ -81,8 +81,12 @@ choice = st.sidebar.radio(
 )
 st.session_state.menu_choice = choice
 
+if st.sidebar.button("🔄 Обновить данные", use_container_width=True):
+    clear_data_cache()
+    st.rerun()
+
 st.sidebar.markdown("---")
-st.sidebar.caption("Магазин «Сулайман-Тоо» v1.7.7")
+st.sidebar.caption("Магазин «Сулайман-Тоо» v1.7.8")
 
 if choice == "📦 Склад":
     show_stock_page()
