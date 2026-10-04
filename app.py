@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Главный модуль: Авторизация и Маршрутизация
-# Версия программы: 1.7.6 (старт с продаж, меню запоминается)
+# Версия программы: 1.7.7 (инвентаризация отдельным окном)
 
 import streamlit as st
 from utils import (
@@ -10,26 +10,27 @@ from utils import (
 )
 from database import authenticate_user, check_has_users, hash_password, supabase
 
-# Импорты модулей
 from stock import show_stock_page
 from sales import show_sales_page
 from clients import show_clients_page
 try:
+    from inventory import show_inventory_page
+except Exception:
+    show_inventory_page = lambda: st.title("Инвентаризация недоступна")
+try:
     from cash import show_cash_page
-except:
+except Exception:
     show_cash_page = lambda: st.title("💵 Касса (Модуль в разработке)")
 try:
     from reports import show_reports_page
-except:
+except Exception:
     show_reports_page = lambda: st.title("📊 Отчеты")
 
 st.set_page_config(page_title="Магазин «Сулайман-Тоо»", page_icon="🛍️", layout="wide")
 
-# Инициализация корзины
 if "cart" not in st.session_state:
     st.session_state.cart = []
 
-# Автоматический быстрый вход для Кассира при старте
 if "user" not in st.session_state or st.session_state.user is None:
     st.session_state.user = {
         "id": 0,
@@ -40,11 +41,9 @@ if "user" not in st.session_state or st.session_state.user is None:
 current_user = st.session_state.user
 user_role = current_user["role"]
 
-# --- БОКОВАЯ ПАНЕЛЬ ---
 st.sidebar.markdown(f"### 👤 {current_user['username']}")
 st.sidebar.info(f"Текущий режим: **{user_role}**")
 
-# Кнопка переключения режимов
 if user_role == "Администратор":
     if st.sidebar.button("🚪 Выйти в режим Кассира", use_container_width=True):
         st.session_state.user = None
@@ -70,7 +69,7 @@ else:
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🛠️ Главное меню")
 
-menu_options = ["🛒 Продажи", "📦 Склад", "👥 Клиенты", "💵 Касса", "📊 Отчеты"]
+menu_options = ["🛒 Продажи", "📦 Склад", "📋 Инвентаризация", "👥 Клиенты", "💵 Касса", "📊 Отчеты"]
 if "menu_choice" not in st.session_state or st.session_state.menu_choice not in menu_options:
     st.session_state.menu_choice = "🛒 Продажи"
 
@@ -83,11 +82,12 @@ choice = st.sidebar.radio(
 st.session_state.menu_choice = choice
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Магазин «Сулайман-Тоо» v1.7.6")
+st.sidebar.caption("Магазин «Сулайман-Тоо» v1.7.7")
 
-# Роутинг страниц
 if choice == "📦 Склад":
     show_stock_page()
+elif choice == "📋 Инвентаризация":
+    show_inventory_page()
 elif choice == "🛒 Продажи":
     show_sales_page()
 elif choice == "👥 Клиенты":
