@@ -1,12 +1,24 @@
+import os
 import time
 import streamlit as st
 import hashlib
 from supabase import create_client, Client
 
+def secret_value(name: str) -> str:
+    try:
+        value = st.secrets.get(name)
+    except Exception:
+        value = None
+    if not value:
+        value = os.environ.get(name)
+    return value or ""
+
 @st.cache_resource
 def init_supabase() -> Client:
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
+    url = secret_value("SUPABASE_URL")
+    key = secret_value("SUPABASE_KEY")
+    if not url or not key:
+        raise RuntimeError("Нет SUPABASE_URL или SUPABASE_KEY")
     return create_client(url, key)
 
 try:
