@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Клиенты и рассрочки
-# Версия: 1.9 (одно окно: кто должен + принять оплату + правка графика)
+# Версия: 1.10 (одно окно: кто должен + принять оплату + правка графика + выписка)
 
 import streamlit as st
 import pandas as pd
@@ -144,6 +144,13 @@ def show_work_tab(user_role, clients, clients_map, sales, payments, today):
         client = clients_map.get(cid, {})
         st.markdown(f"### {client.get('fio', 'Клиент')}")
         st.caption(f"Телефон: {client.get('phone') or '—'} | Остаток: **{int(by_client[cid]['debt']):,} сом**")
+        st.button(
+            "📱 Выписка для клиента (скриншот)",
+            use_container_width=True,
+            on_click=open_client_statement,
+            args=(cid,),
+            key="open_statement_btn",
+        )
 
         client_sales = [s for s in sales if s.get("client_id") == cid]
         sale_labels = {}
@@ -238,6 +245,14 @@ def show_work_tab(user_role, clients, clients_map, sales, payments, today):
             months = st.number_input("Пересобрать график, месяцев", min_value=1, max_value=36, value=max(len(sale_pays), 1), key="rebuild_months")
             if st.button("Пересоздать график с текущего месяца"):
                 rebuild_schedule(sale, sale_pays, int(months))
+
+
+def open_client_statement(client_id):
+    try:
+        from statement import open_statement
+        open_statement(client_id)
+    except Exception:
+        pass
 
 
 def accept_payment(unpaid, amount, client_name, start_id):
