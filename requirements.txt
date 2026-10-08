@@ -5,3 +5,4 @@ supabase
 extra-streamlit-components
 python-docx
 num2words
+pillow

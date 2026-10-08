@@ -4,18 +4,21 @@
 # Долг считается так же, как во вкладке «Клиенты → Рассрочки»:
 # остаток = credit_balance договора − сумма amount_paid по его графику.
 
+import base64
 import html
 import re
 from datetime import datetime
 from urllib.parse import quote
 
 import streamlit as st
+import streamlit.components.v1 as components
 from database import supabase
 from clients import parse_due
 from utils import fix_contract_name_on_fly
 
 SHOP_NAME = "Магазин «Сулайман-Тоо»"
 STATEMENT_MENU = "📱 Выписка клиента"
+STATE_MARKS = {"paid": "✅", "partial": "🟡", "wait": "⚪", "overdue": "🔴"}
 
 
 def money(value):
@@ -68,13 +71,14 @@ def build_statement(client_id, sales, payments, today):
             got = num(p.get("amount_paid"))
             left = expected - got
             if left <= 0.5:
-                mark = "✅"
+                state = "paid"
             elif due and due < today:
-                mark = "🔴"
+                state = "overdue"
             elif got > 0:
-                mark = "🟡"
+                state = "partial"
             else:
-                mark = "⚪"
+                state = "wait"
+            mark = STATE_MARKS[state]
             schedule.append({
                 "due": due,
                 "due_raw": p.get("due_date"),
@@ -82,6 +86,7 @@ def build_statement(client_id, sales, payments, today):
                 "paid": got,
                 "left": left,
                 "mark": mark,
+                "state": state,
             })
         contracts.append({
             "sale": sale,
@@ -247,6 +252,90 @@ def render_card(client, data, today, show_closed):
     st.markdown("".join(parts), unsafe_allow_html=True)
 
 
+SHARE_HTML = """
+<div style="font-family:-apple-system,'Segoe UI',Roboto,Arial,sans-serif;">
+  <button id="share-btn" style="width:100%;padding:10px 12px;border:none;border-radius:8px;
+      background:#ff4b4b;color:#fff;font-size:16px;font-weight:600;cursor:pointer;">
+    📤 Поделиться картинкой
+  </button>
+  <div id="share-msg" style="color:#6b7480;font-size:13px;margin-top:6px;text-align:center;"></div>
+</div>
+<script>
+const PNG_B64 = "__PNG__";
+const FILE_NAME = "__NAME__";
+const btn = document.getElementById("share-btn");
+const msg = document.getElementById("share-msg");
+const FALLBACK = "Здесь поделиться не получится. Нажмите «Скачать картинку» ниже.";
+
+function makeFile() {
+  const bin = atob(PNG_B64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new File([bytes], FILE_NAME, {type: "image/png"});
+}
+
+function navigators() {
+  const list = [navigator];
+  try { if (window.parent && window.parent !== window && window.parent.navigator) list.push(window.parent.navigator); } catch (e) {}
+  return list;
+}
+
+function canShareFile(nav, file) {
+  try { return !!(nav.share && nav.canShare && nav.canShare({files: [file]})); } catch (e) { return false; }
+}
+
+const probe = makeFile();
+if (!navigators().some(n => canShareFile(n, probe))) {
+  btn.disabled = true;
+  btn.style.opacity = "0.5";
+  msg.textContent = FALLBACK;
+}
+
+btn.addEventListener("click", async () => {
+  const file = makeFile();
+  for (const nav of navigators()) {
+    if (!canShareFile(nav, file)) continue;
+    try {
+      await nav.share({files: [file], title: "Выписка клиента"});
+      msg.textContent = "";
+      return;
+    } catch (e) {
+      if (e && e.name === "AbortError") return;
+    }
+  }
+  msg.textContent = FALLBACK;
+});
+</script>
+"""
+
+
+def show_image_buttons(client, data, today, show_closed, cid):
+    try:
+        from statement_image import render_statement_png
+        png = render_statement_png(SHOP_NAME, client, data, today, show_closed)
+    except Exception as e:
+        st.warning(f"Картинку сделать не получилось: {e}")
+        return
+    file_name = f"vypiska_{cid}_{today.strftime('%Y-%m-%d')}.png"
+    file_name = re.sub(r"[^A-Za-z0-9_.-]", "_", file_name)
+    share_html = SHARE_HTML.replace("__PNG__", base64.b64encode(png).decode("ascii")).replace("__NAME__", file_name)
+    if hasattr(st, "iframe"):
+        st.iframe(share_html, height=100)
+    else:
+        components.html(share_html, height=100)
+    st.download_button(
+        "⬇️ Скачать картинку",
+        data=png,
+        file_name=file_name,
+        mime="image/png",
+        use_container_width=True,
+        key="statement_png_download",
+    )
+    with st.expander("🖼️ Показать картинку"):
+        st.caption("На телефоне можно нажать на картинку и удерживать, чтобы сохранить или отправить.")
+        st.image(png, use_container_width=True)
+
+
 def show_statement_page():
     try:
         clients = supabase.table("clients").select("*").order("fio").execute().data or []
@@ -278,7 +367,8 @@ def show_statement_page():
         show_closed = st.session_state.get("statement_show_closed", False)
         render_card(client, data, today, show_closed)
 
-        st.caption("Сделайте скриншот экрана и отправьте клиенту в WhatsApp.")
+        st.caption("Сделайте скриншот экрана или отправьте выписку картинкой.")
+        show_image_buttons(client, data, today, show_closed, cid)
         wa = whatsapp_phone(client.get("phone"))
         if wa:
             url = f"https://wa.me/{wa}?text={quote(whatsapp_text(client, data, today))}"
