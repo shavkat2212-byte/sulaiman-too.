@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Касса
-# Версия: 3.2 (сверка дня: утро, продажи, погашения, расходы, вечер)
+# Версия: 3.3 (аннулирование погашений: минусовая запись [АННУЛИРОВАНИЕ])
 
 import streamlit as st
 import pandas as pd
@@ -24,12 +24,14 @@ def get_category_from_comment(comment: str) -> str:
         return "Нужды магазина"
     if comment.startswith("[ПОСТАВЩИК]"):
         return "Оплата контрагенту"
+    if comment.startswith("[АННУЛИРОВАНИЕ]"):
+        return "Аннулирование погашения"
     return "Без категории"
 
 
 def clean_comment(comment: str) -> str:
     comment = str(comment or "").strip()
-    for prefix in ("[НУЖДЫ]", "[ПОСТАВЩИК]"):
+    for prefix in ("[НУЖДЫ]", "[ПОСТАВЩИК]", "[АННУЛИРОВАНИЕ]"):
         if comment.startswith(prefix):
             return comment[len(prefix):].strip()
     return comment
@@ -78,7 +80,8 @@ def build_day_rows(sales_data, ops_data):
         amount = float(op.get("amount", 0) or 0)
         cat = get_category_from_comment(op.get("comment", ""))
         row = {"day": day, "sales": 0.0, "inflow": 0.0, "needs": 0.0, "supplier": 0.0, "other_out": 0.0}
-        if amount > 0:
+        if amount > 0 or cat == "Аннулирование погашения":
+            # аннулирование уменьшает «Погашения и взносы» за день
             row["inflow"] = amount
         elif cat == "Нужды магазина":
             row["needs"] = abs(amount)
@@ -192,7 +195,9 @@ def show_cash_page():
                 continue
             amount = float(op.get("amount", 0) or 0)
             cat = get_category_from_comment(op.get("comment", ""))
-            if amount > 0:
+            if cat == "Аннулирование погашения":
+                kind = "Аннулирование погашения"
+            elif amount > 0:
                 kind = "Погашение / взнос"
             elif cat == "Нужды магазина":
                 kind = "Нужды"
@@ -232,7 +237,7 @@ def show_cash_page():
     with col_f2:
         end_date = st.date_input("Конец периода", value=datetime.now().date())
     with col_f3:
-        filter_cat = st.selectbox("Фильтр по типу", ["Все", "Нужды магазина", "Оплата контрагенту", "Без категории"])
+        filter_cat = st.selectbox("Фильтр по типу", ["Все", "Нужды магазина", "Оплата контрагенту", "Аннулирование погашения", "Без категории"])
 
     df_ops = pd.DataFrame(ops_data) if ops_data else pd.DataFrame()
     if not df_ops.empty:

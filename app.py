@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Главный модуль: Авторизация и Маршрутизация
-# Версия программы: 1.8.0 (выписка клиента для WhatsApp)
+# Версия программы: 1.9.0 (правка рассрочек для администратора)
 
 import streamlit as st
 from utils import (
@@ -25,6 +25,10 @@ try:
     from statement import show_statement_page
 except Exception:
     show_statement_page = lambda: st.title("Выписка клиента недоступна")
+try:
+    from installment_admin import show_installment_admin_page
+except Exception:
+    show_installment_admin_page = lambda: st.title("Правка рассрочек недоступна")
 try:
     from cash import show_cash_page
 except Exception:
@@ -77,9 +81,9 @@ else:
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🛠️ Главное меню")
 
-menu_options = ["🛒 Продажи", "📦 Склад", "📋 Инвентаризация", "📤 Архив", "👥 Клиенты", "📱 Выписка клиента", "💵 Касса", "📊 Отчеты"]
+menu_options = ["🛒 Продажи", "📦 Склад", "📋 Инвентаризация", "📤 Архив", "👥 Клиенты", "📱 Выписка клиента", "🛠️ Правка рассрочек", "💵 Касса", "📊 Отчеты"]
 if user_role != "Администратор":
-    menu_options = [item for item in menu_options if item != "📤 Архив"]
+    menu_options = [item for item in menu_options if item not in ("📤 Архив", "🛠️ Правка рассрочек")]
 if "menu_choice" not in st.session_state or st.session_state.menu_choice not in menu_options:
     st.session_state.menu_choice = "🛒 Продажи"
 
@@ -96,7 +100,7 @@ if st.sidebar.button("🔄 Обновить данные", use_container_width=T
     st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Магазин «Сулайман-Тоо» v1.8.0")
+st.sidebar.caption("Магазин «Сулайман-Тоо» v1.9.0")
 
 if choice == "📦 Склад":
     show_stock_page()
@@ -110,6 +114,8 @@ elif choice == "👥 Клиенты":
     show_clients_page()
 elif choice == "📱 Выписка клиента":
     show_statement_page()
+elif choice == "🛠️ Правка рассрочек":
+    show_installment_admin_page()
 elif choice == "💵 Касса":
     show_cash_page()
 elif choice == "📊 Отчеты":
