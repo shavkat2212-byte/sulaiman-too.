@@ -1,10 +1,13 @@
 # Магазин «Сулайман-Тоо» — Модуль: Касса
-# Версия: 3.3 (аннулирование погашений: минусовая запись [АННУЛИРОВАНИЕ])
+# Версия: 3.4 (правка операции не меняет знак; аннулирования не редактируются)
 
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 from database import supabase
+from cash_logic import (
+    EXPENSE_CATS, check_cash_delete, clean_comment, get_category_from_comment, op_kind, plan_cash_edit,
+)
 
 def normalize_date(date_str):
     if not date_str:
@@ -18,28 +21,13 @@ def normalize_date(date_str):
     return None
 
 
-def get_category_from_comment(comment: str) -> str:
-    comment = str(comment or "").strip()
-    if comment.startswith("[НУЖДЫ]"):
-        return "Нужды магазина"
-    if comment.startswith("[ПОСТАВЩИК]"):
-        return "Оплата контрагенту"
-    if comment.startswith("[АННУЛИРОВАНИЕ]"):
-        return "Аннулирование погашения"
-    return "Без категории"
-
-
-def clean_comment(comment: str) -> str:
-    comment = str(comment or "").strip()
-    for prefix in ("[НУЖДЫ]", "[ПОСТАВЩИК]", "[АННУЛИРОВАНИЕ]"):
-        if comment.startswith(prefix):
-            return comment[len(prefix):].strip()
-    return comment
-
-
 def get_user_name():
     user = st.session_state.get("user", {})
-    return user.get("name") or user.get("role") or "Неизвестный"
+    name = user.get("name") or user.get("username")
+    role = user.get("role")
+    if name and role:
+        return f"{name} ({role})"
+    return name or role or "Неизвестный"
 
 
 def write_audit(action, table_name, record_id, old_data=None, new_data=None, comment=""):
@@ -276,45 +264,7 @@ def show_cash_page():
         selected_id = options[selected_label]
         selected_op = next((op for op in ops_data if op["id"] == selected_id), None)
         if selected_op:
-            current_cat = get_category_from_comment(selected_op.get("comment", ""))
-            current_clean = clean_comment(selected_op.get("comment", ""))
-            current_amount = float(selected_op.get("amount", 0))
-            with st.form("edit_cash_form"):
-                cats = ["Нужды магазина", "Оплата контрагенту", "Без категории"]
-                new_cat = st.selectbox("Тип расхода", cats, index=cats.index(current_cat) if current_cat in cats else 2)
-                new_amount_abs = st.number_input("Сумма (сом)", min_value=0.0, value=abs(current_amount), step=100.0)
-                new_comment = st.text_input("Комментарий (без префикса)", value=current_clean)
-                col_btn1, col_btn2 = st.columns(2)
-                with col_btn1:
-                    save_btn = st.form_submit_button("💾 Сохранить изменения", type="primary")
-                with col_btn2:
-                    delete_btn = st.form_submit_button("🗑️ Удалить операцию")
-                if save_btn:
-                    if new_cat == "Нужды магазина":
-                        final_comment = f"[НУЖДЫ] {new_comment}".strip()
-                    elif new_cat == "Оплата контрагенту":
-                        final_comment = f"[ПОСТАВЩИК] {new_comment}".strip()
-                    else:
-                        final_comment = new_comment
-                    final_amount = -abs(new_amount_abs)
-                    old_data = {"date": selected_op.get("date"), "amount": selected_op.get("amount"), "comment": selected_op.get("comment")}
-                    new_data = {"date": selected_op.get("date"), "amount": final_amount, "comment": final_comment}
-                    try:
-                        supabase.table("cash_operations").update({"amount": final_amount, "comment": final_comment}).eq("id", selected_id).execute()
-                        write_audit("UPDATE", "cash_operations", selected_id, old_data, new_data, "Редактирование кассовой операции")
-                        st.success("Операция обновлена.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Ошибка: {e}")
-                if delete_btn:
-                    old_data = {"date": selected_op.get("date"), "amount": selected_op.get("amount"), "comment": selected_op.get("comment")}
-                    try:
-                        supabase.table("cash_operations").delete().eq("id", selected_id).execute()
-                        write_audit("DELETE", "cash_operations", selected_id, old_data, None, "Удаление кассовой операции")
-                        st.success("Операция удалена.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Ошибка удаления: {e}")
+            show_cash_edit_form(selected_op)
 
     st.markdown("---")
     st.subheader("📤 Новый расход из кассы")
@@ -360,3 +310,54 @@ def show_cash_page():
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     except Exception as e:
         st.error(f"Не удалось загрузить журнал: {e}")
+
+
+def show_cash_edit_form(selected_op):
+    selected_id = selected_op["id"]
+    kind = op_kind(selected_op)
+    if kind == "annul":
+        st.info("Это аннулирование погашения — его нельзя менять или удалять здесь, иначе касса и график рассрочки "
+                "разойдутся. Исправьте график в «🛠️ Правка рассрочек» и примите оплату заново в «👥 Клиенты».")
+        return
+    current_cat = get_category_from_comment(selected_op.get("comment", ""))
+    current_clean = clean_comment(selected_op.get("comment", ""))
+    current_amount = float(selected_op.get("amount", 0) or 0)
+    with st.form("edit_cash_form"):
+        if kind == "income":
+            st.caption("Приход (погашение / взнос): сумма остаётся плюсом.")
+            new_cat = None
+        else:
+            st.caption("Расход: сумма остаётся минусом.")
+            new_cat = st.selectbox("Тип расхода", EXPENSE_CATS,
+                                   index=EXPENSE_CATS.index(current_cat) if current_cat in EXPENSE_CATS else 2)
+        new_amount_abs = st.number_input("Сумма (сом)", min_value=0.0, value=abs(current_amount), step=100.0)
+        new_comment = st.text_input("Комментарий (без префикса)", value=current_clean)
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            save_btn = st.form_submit_button("💾 Сохранить изменения", type="primary")
+        with col_btn2:
+            delete_btn = st.form_submit_button("🗑️ Удалить операцию")
+        old_data = {"date": selected_op.get("date"), "amount": selected_op.get("amount"), "comment": selected_op.get("comment")}
+        if save_btn:
+            try:
+                new_vals = plan_cash_edit(selected_op, new_amount_abs, new_comment, new_cat)
+                supabase.table("cash_operations").update(new_vals).eq("id", selected_id).execute()
+                write_audit("UPDATE", "cash_operations", selected_id, old_data,
+                            {"date": selected_op.get("date"), **new_vals}, "Редактирование кассовой операции")
+                st.success("Операция обновлена.")
+                st.rerun()
+            except ValueError as e:
+                st.error(str(e))
+            except Exception as e:
+                st.error(f"Ошибка: {e}")
+        if delete_btn:
+            try:
+                check_cash_delete(selected_op)
+                supabase.table("cash_operations").delete().eq("id", selected_id).execute()
+                write_audit("DELETE", "cash_operations", selected_id, old_data, None, "Удаление кассовой операции")
+                st.success("Операция удалена.")
+                st.rerun()
+            except ValueError as e:
+                st.error(str(e))
+            except Exception as e:
+                st.error(f"Ошибка удаления: {e}")

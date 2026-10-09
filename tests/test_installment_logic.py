@@ -127,3 +127,29 @@ def test_reuse_ids_turns_relayout_into_updates():
     assert [r["id"] for r in new] == ["3", "4", "5", "6", None]
     plan = plan_schedule_save(SALE, rows(), new, 33600)
     assert not plan["errors"] and not plan["deletes"] and len(plan["inserts"]) == 1 and plan["check"]["ok"]
+
+
+def test_rebuild_keeps_paid_rows_and_matches_balance():
+    from installment_logic import plan_rebuild_unpaid
+    plan = plan_rebuild_unpaid(SALE, rows(), 3, date(2026, 10, 9))
+    assert not plan["errors"]
+    touched = {u["id"] for u in plan["updates"]} | {r["id"] for r in plan["deletes"]}
+    assert not touched & {1, 2}                       # оплаченная и частичная строки не тронуты
+    assert {u["id"] for u in plan["updates"]} == {3, 4, 5} and [r["id"] for r in plan["deletes"]] == [6]
+    # 33600 - 5600 - 5600 = 22400 на 3 месяца
+    new = [u["new"] for u in sorted(plan["updates"], key=lambda u: u["id"])]
+    assert [n["amount_expected"] for n in new] == [7467, 7467, 7466]
+    assert [n["due_date"] for n in new] == ["2026-11-09", "2026-12-09", "2027-01-09"]
+    assert plan["check"]["ok"] and plan["check"]["schedule_total"] == 33600
+
+
+def test_rebuild_more_months_inserts_and_errors():
+    from installment_logic import plan_rebuild_unpaid
+    plan = plan_rebuild_unpaid(SALE, rows(), 8, date(2026, 1, 31))
+    assert len(plan["inserts"]) == 4 and not plan["deletes"] and plan["check"]["ok"]
+    assert plan["updates"][0]["new"]["due_date"] == "2026-02-28"
+    paid_all = [dict(r, amount_paid=r["amount_expected"]) for r in rows()]
+    with pytest.raises(ValueError):
+        plan_rebuild_unpaid(SALE, paid_all, 3, date(2026, 10, 9))
+    with pytest.raises(ValueError):
+        plan_rebuild_unpaid(SALE, rows(), 0, date(2026, 10, 9))

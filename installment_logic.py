@@ -263,3 +263,31 @@ def plan_annulment(row, amount, reason, client_name, now=None):
         "amount": clean_amount(amount),
         "reason": reason,
     }
+
+
+def plan_rebuild_unpaid(sale, old_rows, months, start, pay_day=None):
+    """
+    «Пересоздать график»: оплаченные и частично оплаченные строки не трогаем.
+    Неоплаченные раскладываем заново на months месяцев с месяца после start так,
+    чтобы сумма всего графика = credit_balance (оплаченные строки + новые неоплаченные).
+    """
+    months = int(months or 0)
+    start = parse_day(start)
+    if months <= 0:
+        raise ValueError("Количество месяцев должно быть больше 0")
+    if not start:
+        raise ValueError("Не указана дата начала")
+    locked = [r for r in old_rows if is_locked(r)]
+    open_needed = round(num(sale.get("credit_balance")) - sum(row_expected(r) for r in locked), 2)
+    if open_needed <= TOLERANCE:
+        raise ValueError("Нечего пересобирать: неоплаченного остатка по графику нет")
+    monthly = open_needed / months
+    monthly = round(monthly) if open_needed == int(open_needed) else round(monthly, 2)
+    day = min(int(pay_day or start.day), 28)
+    draft, left = [], open_needed
+    for i in range(1, months + 1):
+        pay = round(left, 2) if i == months else monthly
+        left = round(left - pay, 2)
+        draft.append({"id": None, "due": add_month(start.replace(day=1), i, day), "amount": clean_amount(pay)})
+    old_draft = [{"id": str(r.get("id"))} for r in sort_rows(old_rows) if not is_locked(r)]
+    return plan_schedule_save(sale, old_rows, reuse_ids(draft, old_draft))
