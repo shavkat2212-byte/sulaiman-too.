@@ -153,3 +153,17 @@ def test_rebuild_more_months_inserts_and_errors():
         plan_rebuild_unpaid(SALE, paid_all, 3, date(2026, 10, 9))
     with pytest.raises(ValueError):
         plan_rebuild_unpaid(SALE, rows(), 0, date(2026, 10, 9))
+
+
+def test_single_row_edit_blocks_paid_and_partial():
+    from installment_logic import LOCKED_ROW_MESSAGE, plan_single_row_edit
+    for rid in (1, 2):  # оплачен и частично
+        with pytest.raises(ValueError, match="аннулируйте"):
+            plan_single_row_edit(SALE, rows(), rid, date(2026, 10, 20), 100)
+    assert "Правка рассрочек" in LOCKED_ROW_MESSAGE
+    plan = plan_single_row_edit(SALE, rows(), 4, date(2026, 12, 20), 5000)
+    assert not plan["errors"] and not plan["inserts"] and not plan["deletes"]
+    assert plan["updates"] == [{"id": 4, "old": {"due_date": "2026-12-01", "amount_expected": 5600, "status": "Не оплачен"},
+                                "new": {"due_date": "2026-12-20", "amount_expected": 5000, "status": "Не оплачен"}}]
+    with pytest.raises(ValueError):
+        plan_single_row_edit(SALE, rows(), 999, date(2026, 12, 20), 5000)

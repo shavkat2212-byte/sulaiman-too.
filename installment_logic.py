@@ -291,3 +291,26 @@ def plan_rebuild_unpaid(sale, old_rows, months, start, pay_day=None):
         draft.append({"id": None, "due": add_month(start.replace(day=1), i, day), "amount": clean_amount(pay)})
     old_draft = [{"id": str(r.get("id"))} for r in sort_rows(old_rows) if not is_locked(r)]
     return plan_schedule_save(sale, old_rows, reuse_ids(draft, old_draft))
+
+
+LOCKED_ROW_MESSAGE = ("Этот платёж уже оплачен (полностью или частично) — менять его нельзя. "
+                      "Откройте «🛠️ Правка рассрочек», сначала аннулируйте оплату, затем исправьте платёж "
+                      "и примите оплату заново.")
+
+
+def plan_single_row_edit(sale, old_rows, row_id, new_due, new_amount):
+    """Правка даты и суммы одного платежа (Клиенты → «Сохранить дату и сумму»). Оплаченные — запрещено."""
+    target = next((r for r in old_rows if str(r.get("id")) == str(row_id)), None)
+    if target is None:
+        raise ValueError("Платёж не найден в этом договоре")
+    if is_locked(target):
+        raise ValueError(LOCKED_ROW_MESSAGE)
+    draft = []
+    for r in sort_rows(old_rows):
+        if is_locked(r):
+            continue
+        if str(r.get("id")) == str(row_id):
+            draft.append({"id": str(r.get("id")), "due": new_due, "amount": new_amount})
+        else:
+            draft.append({"id": str(r.get("id")), "due": parse_day(r.get("due_date")), "amount": row_expected(r)})
+    return plan_schedule_save(sale, old_rows, draft)
