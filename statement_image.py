@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Выписка клиента картинкой (PNG)
-# Версия: 1.0
+# Версия: 1.1 — клиентам в рассрочке не показываем сумму покупки
 # Рисует ту же выписку, что и на экране, в PNG через Pillow.
 # Шрифт DejaVu Sans лежит в папке fonts/ (лицензия: fonts/DejaVu-LICENSE.txt),
 # чтобы кириллица работала на любом сервере.
@@ -148,6 +148,20 @@ class Painter:
             self.y += line_h
 
 
+def contract_sum_line(c):
+    """Строка с суммами договора. Клиенту в рассрочке сумму покупки не показываем."""
+    if c.get("installment"):
+        line = f"Сумма рассрочки: {money(c['final'])}"
+        if c["down"] > 0.5:
+            line += f" · взнос: {money(c['down'])}"
+        return line
+    line = f"Сумма покупки: {money(c['total_sale'])}"
+    if c["down"] > 0.5:
+        line += f" · взнос: {money(c['down'])}"
+    line += f" · в рассрочку: {money(c['balance'])}"
+    return line
+
+
 def paint(p, shop_name, client, data, today, show_closed):
     left = PAD
     right = BASE_W - PAD
@@ -217,10 +231,7 @@ def paint(p, shop_name, client, data, today, show_closed):
             start = p.y
             p.text(left + 6, start, "•", font(13), TEXT)
             p.para(left + 18, g, font(13), width - 18)
-        sum_line = f"Сумма покупки: {money(c['total_sale'])}"
-        if c["down"] > 0.5:
-            sum_line += f" · взнос: {money(c['down'])}"
-        sum_line += f" · в рассрочку: {money(c['balance'])}"
+        sum_line = contract_sum_line(c)
         p.y += 2
         p.para(left, sum_line, font(11.5), width, DARK_GREY)
         p.y += 4

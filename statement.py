@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Выписка клиента (для скриншота в WhatsApp)
-# Версия: 1.0
+# Версия: 1.1 — клиентам в рассрочке не показываем сумму покупки
 # Только чтение из базы: clients, sales (Рассрочка), credit_payments.
 # Долг считается так же, как во вкладке «Клиенты → Рассрочки»:
 # остаток = credit_balance договора − сумма amount_paid по его графику.
@@ -55,6 +55,24 @@ def sale_day(sale):
     return parse_due(sale.get("day") or sale.get("date"))
 
 
+def is_installment(sale):
+    return str(sale.get("payment") or "").strip() == "Рассрочка"
+
+
+def contract_sum_line(c):
+    """Строка с суммами договора. Клиенту в рассрочке сумму покупки не показываем."""
+    if c.get("installment"):
+        line = f'Сумма рассрочки: {money(c["final"])}'
+        if c["down"] > 0.5:
+            line += f' · взнос: {money(c["down"])}'
+        return line
+    line = f'Сумма покупки: {money(c["total_sale"])}'
+    if c["down"] > 0.5:
+        line += f' · взнос: {money(c["down"])}'
+    line += f' · в рассрочку: {money(c["balance"])}'
+    return line
+
+
 def build_statement(client_id, sales, payments, today):
     """Считает всё для выписки. sales — договоры «Рассрочка» этого клиента."""
     contracts = []
@@ -88,13 +106,19 @@ def build_statement(client_id, sales, payments, today):
                 "mark": mark,
                 "state": state,
             })
+        installment = is_installment(sale)
+        down = num(sale.get("down_payment"))
         contracts.append({
             "sale": sale,
             "day": sale_day(sale),
             "goods": parse_goods(sale),
-            "total_sale": num(sale.get("total_sale")),
-            "down": num(sale.get("down_payment")),
+            "installment": installment,
+            # Для рассрочки сумму покупки (цена товара до наценки) в выписку не берём вообще.
+            "total_sale": None if installment else num(sale.get("total_sale")),
+            "down": down,
             "balance": balance,
+            # Сумма рассрочки — цена, за которую продали клиенту: взнос + долг с наценкой (как в договоре).
+            "final": down + balance,
             "paid": paid,
             "debt": balance - paid,
             "schedule": schedule,
@@ -223,11 +247,7 @@ def render_card(client, data, today, show_closed):
         parts.append('<div class="contract">')
         parts.append(f'<div class="c-head">🧾 Покупка от {day_txt}{closed}</div>')
         parts.append('<ul class="goods">' + "".join(f"<li>{e(g)}</li>" for g in c["goods"]) + "</ul>")
-        sum_line = f'Сумма покупки: {money(c["total_sale"])}'
-        if c["down"] > 0.5:
-            sum_line += f' · взнос: {money(c["down"])}'
-        sum_line += f' · в рассрочку: {money(c["balance"])}'
-        parts.append(f'<div class="c-sum">{sum_line}</div>')
+        parts.append(f'<div class="c-sum">{e(contract_sum_line(c))}</div>')
         if c["schedule"]:
             parts.append('<table><tr><th>Дата</th><th class="n">Надо</th><th class="n">Оплачено</th><th></th></tr>')
             for r in c["schedule"]:
