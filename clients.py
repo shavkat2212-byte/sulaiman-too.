@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Клиенты и рассрочки
-# Версия: 1.10 (одно окно: кто должен + принять оплату + правка графика + выписка)
+# Версия: 1.12 (оплаченные платежи нельзя править здесь — только через аннулирование)
 
 import streamlit as st
 import pandas as pd
@@ -225,25 +225,30 @@ def show_work_tab(user_role, clients, clients_map, sales, payments, today):
 
             if unpaid:
                 edit_p = pay_labels[pay_label]
-                due = parse_due(edit_p.get("due_date")) or today
-                new_due = st.date_input("Дата выбранного платежа", value=due, key=f"one_due_{edit_p['id']}")
-                new_expected = st.number_input(
-                    "Сумма выбранного платежа",
-                    min_value=0.0,
-                    value=float(edit_p.get("amount_expected", 0) or 0),
-                    step=50.0,
-                    key=f"one_amt_{edit_p['id']}",
-                )
-                if st.button("Сохранить дату и сумму"):
-                    supabase.table("credit_payments").update({
-                        "due_date": new_due.strftime("%Y-%m-%d"),
-                        "amount_expected": new_expected,
-                    }).eq("id", edit_p["id"]).execute()
-                    st.success("Платёж обновлён")
-                    st.rerun()
+                if float(edit_p.get("amount_paid", 0) or 0) > 0.5:
+                    from installment_logic import LOCKED_ROW_MESSAGE
+                    st.info(LOCKED_ROW_MESSAGE)
+                else:
+                    due = parse_due(edit_p.get("due_date")) or today
+                    new_due = st.date_input("Дата выбранного платежа", value=due, key=f"one_due_{edit_p['id']}")
+                    new_expected = st.number_input(
+                        "Сумма выбранного платежа",
+                        min_value=0.0,
+                        value=float(edit_p.get("amount_expected", 0) or 0),
+                        step=50.0,
+                        key=f"one_amt_{edit_p['id']}",
+                    )
+                    if st.button("Сохранить дату и сумму"):
+                        save_single_payment(sale, sale_pays, edit_p["id"], new_due, new_expected)
 
-            months = st.number_input("Пересобрать график, месяцев", min_value=1, max_value=36, value=max(len(sale_pays), 1), key="rebuild_months")
-            if st.button("Пересоздать график с текущего месяца"):
+            open_count = len([p for p in sale_pays if float(p.get("amount_paid", 0) or 0) <= 0.5])
+            months = st.number_input("Разложить неоплаченный остаток на месяцев", min_value=1, max_value=36,
+                                     value=max(open_count, 1), key="rebuild_months")
+            if st.button(
+                "Пересоздать неоплаченные платежи с текущего месяца",
+                help="Оплаченные и частично оплаченные платежи не меняются. Неоплаченные раскладываются заново "
+                     "поровну, чтобы весь график = сумме рассрочки по договору. Изменения пишутся в журнал.",
+            ):
                 rebuild_schedule(sale, sale_pays, int(months))
 
 
@@ -311,30 +316,60 @@ def shift_remaining(unpaid, pay_day):
     st.rerun()
 
 
-def rebuild_schedule(sale, sale_pays, months):
-    paid = sum(float(p.get("amount_paid", 0) or 0) for p in sale_pays)
-    remaining = float(sale.get("credit_balance", 0) or 0) - paid
-    if remaining <= 0 or months <= 0:
-        st.error("Нечего пересобирать")
+def save_single_payment(sale, sale_pays, row_id, new_due, new_amount):
+    """Правка одного неоплаченного платежа: проверка админа и журнал — через installment_admin."""
+    from installment_logic import plan_single_row_edit
+    from installment_admin import NotAdmin, apply_schedule_plan, audit_available
+    try:
+        plan = plan_single_row_edit(sale, sale_pays, row_id, new_due, new_amount)
+    except ValueError as e:
+        st.error(str(e))
         return
-    for p in sale_pays:
-        supabase.table("credit_payments").delete().eq("id", p["id"]).execute()
-    monthly = round(remaining / months, 2)
-    balance = remaining
-    start = datetime.now().date()
-    for i in range(1, months + 1):
-        due = add_months(start, i, min(start.day, 28))
-        amount = round(balance, 2) if i == months else monthly
-        balance = round(balance - amount, 2)
-        supabase.table("credit_payments").insert({
-            "sale_id": sale["id"],
-            "client_id": sale.get("client_id"),
-            "due_date": due.strftime("%Y-%m-%d"),
-            "amount_expected": amount,
-            "amount_paid": 0,
-            "status": "Не оплачен",
-        }).execute()
-    st.success("График пересоздан")
+    if plan["errors"]:
+        st.error("; ".join(plan["errors"]))
+        return
+    if not plan["changed"]:
+        st.info("Ничего не изменилось")
+        return
+    if not audit_available():
+        st.error("Журнал audit_log недоступен — выполните migrations/001_audit_log.sql в Supabase и повторите.")
+        return
+    try:
+        apply_schedule_plan(sale, plan, "Правка одного платежа (Клиенты)")
+    except NotAdmin as e:
+        st.error(str(e))
+        return
+    except Exception as e:
+        st.error(f"Ошибка: {e}. Обновите страницу и проверьте график.")
+        return
+    st.success("Платёж обновлён")
+    st.rerun()
+
+
+def rebuild_schedule(sale, sale_pays, months):
+    """Пересобирает только неоплаченные строки; оплаченные и частичные не трогает."""
+    from installment_logic import plan_rebuild_unpaid
+    from installment_admin import NotAdmin, apply_schedule_plan, audit_available
+    try:
+        plan = plan_rebuild_unpaid(sale, sale_pays, months, datetime.now().date())
+    except ValueError as e:
+        st.error(str(e))
+        return
+    if plan["errors"]:
+        st.error("; ".join(plan["errors"]))
+        return
+    if not audit_available():
+        st.error("Журнал audit_log недоступен — выполните migrations/001_audit_log.sql в Supabase и повторите.")
+        return
+    try:
+        apply_schedule_plan(sale, plan, f"Пересоздание неоплаченных платежей на {months} мес.")
+    except NotAdmin as e:
+        st.error(str(e))
+        return
+    except Exception as e:
+        st.error(f"Ошибка: {e}. Обновите страницу и проверьте график.")
+        return
+    st.success("Неоплаченные платежи пересозданы, оплаченные не тронуты")
     st.rerun()
 
 
