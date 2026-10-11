@@ -166,13 +166,18 @@ def whatsapp_text(client, data, today):
     return "\n".join(lines)
 
 
-STATEMENT_CSS = """
+PAGE_CSS = """
 <style>
 [data-testid="stToolbarActions"], [data-testid="stMainMenu"], [data-testid="stAppDeployButton"],
 [data-testid="stDecoration"], [data-testid="stStatusWidget"], footer {
     display: none !important;
 }
 .block-container { padding-top: 2.6rem !important; padding-bottom: 1rem !important; }
+</style>
+"""
+
+STATEMENT_CSS = """
+<style>
 .sl-card { max-width: 480px; margin: 0 auto; background: #ffffff; color: #1f2933;
     border: 1px solid #e3e6ea; border-radius: 14px; padding: 14px 14px 10px 14px;
     font-size: 14px; line-height: 1.35; font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
@@ -204,9 +209,12 @@ STATEMENT_CSS = """
 """
 
 
-def render_card(client, data, today, show_closed):
+def render_card(client, data, today, show_closed, page_chrome=True):
+    """page_chrome=False — карточка внутри другой страницы (без скрытия меню Streamlit)."""
     e = html.escape
     debt = data["debt"]
+    if page_chrome:
+        st.markdown(PAGE_CSS, unsafe_allow_html=True)
     st.markdown(STATEMENT_CSS, unsafe_allow_html=True)
     parts = ['<div class="sl-card">']
     parts.append(f'<div class="shop">🛍️ {e(SHOP_NAME)}</div>')
@@ -329,7 +337,7 @@ btn.addEventListener("click", async () => {
 """
 
 
-def show_image_buttons(client, data, today, show_closed, cid):
+def show_image_buttons(client, data, today, show_closed, cid, key_prefix="statement"):
     try:
         from statement_image import render_statement_png
         png = render_statement_png(SHOP_NAME, client, data, today, show_closed)
@@ -349,7 +357,7 @@ def show_image_buttons(client, data, today, show_closed, cid):
         file_name=file_name,
         mime="image/png",
         use_container_width=True,
-        key="statement_png_download",
+        key=f"{key_prefix}_png_download",
     )
     with st.expander("🖼️ Показать картинку"):
         st.caption("На телефоне можно нажать на картинку и удерживать, чтобы сохранить или отправить.")
