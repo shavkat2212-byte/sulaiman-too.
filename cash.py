@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Касса
-# Версия: 3.4 (правка операции не меняет знак; аннулирования не редактируются)
+# Версия: 3.5 (журнал изменений — отдельная вкладка для администратора, с фильтрами)
 
 import streamlit as st
 import pandas as pd
@@ -84,6 +84,48 @@ def build_day_rows(sales_data, ops_data):
 def show_cash_page():
     st.header("💵 Состояние кассы магазина")
     user_role = st.session_state.get("user", {}).get("role", "Кассир")
+    if user_role == "Администратор":
+        tab_cash, tab_log = st.tabs(["💵 Касса", "📋 Журнал изменений"])
+        with tab_cash:
+            show_cash_main(user_role)
+        with tab_log:
+            show_audit_journal()
+    else:
+        show_cash_main(user_role)
+
+
+def show_audit_journal():
+    """Журнал audit_log: касса, график платежей, договоры. Только для администратора."""
+    from audit_view import ACTION_LABELS, TABLE_LABELS, filter_rows, journal_rows
+    st.subheader("📋 Журнал изменений")
+    st.caption("Кто, когда и что менял: кассовые операции, аннулирования оплат, правки графиков и договоров.")
+    try:
+        entries = supabase.table("audit_log").select("*").order("created_at", desc=True).limit(2000).execute().data or []
+    except Exception as e:
+        st.error(f"Не удалось загрузить журнал: {e}")
+        st.info("Проверьте, что таблица audit_log создана: выполните migrations/001_audit_log.sql в Supabase → SQL Editor.")
+        return
+    rows = journal_rows(entries)
+    if not rows:
+        st.info("Журнал пока пуст. Записи появятся после изменений в кассе или в графиках рассрочек.")
+        return
+    c1, c2 = st.columns(2)
+    date_from = c1.date_input("С", value=datetime.now().date() - timedelta(days=30), key="audit_from")
+    date_to = c2.date_input("По", value=datetime.now().date(), key="audit_to")
+    c3, c4 = st.columns(2)
+    sections = c3.multiselect("Раздел", sorted({r["Раздел"] for r in rows} | set(TABLE_LABELS.values())), key="audit_sections", placeholder="Все")
+    actions = c4.multiselect("Действие", sorted({r["Действие"] for r in rows}), key="audit_actions", placeholder="Все")
+    c5, c6 = st.columns(2)
+    user = c5.selectbox("Кто", ["Все"] + sorted({r["Кто"] for r in rows}), key="audit_user")
+    text = c6.text_input("Поиск (ID, комментарий, сумма…)", key="audit_text")
+    shown = filter_rows(rows, date_from, date_to, sections, actions, user, text)
+    st.caption(f"Записей: {len(shown)} из {len(rows)}")
+    if shown:
+        st.dataframe(pd.DataFrame([{k: v for k, v in r.items() if k != "when"} for r in shown]),
+                     use_container_width=True, hide_index=True)
+
+
+def show_cash_main(user_role):
 
     try:
         sales_res = supabase.table("sales").select("*").execute()
@@ -284,32 +326,6 @@ def show_cash_page():
             except Exception as e:
                 st.error(f"Ошибка: {e}")
 
-    st.markdown("---")
-    st.subheader("📋 Журнал изменений (касса)")
-    try:
-        audit_res = (
-            supabase.table("audit_log").select("*").eq("table_name", "cash_operations")
-            .order("created_at", desc=True).limit(100).execute()
-        )
-        if not audit_res.data:
-            st.info("Журнал пока пуст.")
-        else:
-            rows = []
-            for a in audit_res.data:
-                old_amount = a.get("old_data", {}).get("amount") if isinstance(a.get("old_data"), dict) else None
-                new_amount = a.get("new_data", {}).get("amount") if isinstance(a.get("new_data"), dict) else None
-                rows.append({
-                    "Когда": str(a.get("created_at", ""))[:19],
-                    "Кто": a.get("user_name", ""),
-                    "Действие": a.get("action", ""),
-                    "ID": a.get("record_id", ""),
-                    "Было": old_amount,
-                    "Стало": new_amount,
-                    "Примечание": a.get("comment", ""),
-                })
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-    except Exception as e:
-        st.error(f"Не удалось загрузить журнал: {e}")
 
 
 def show_cash_edit_form(selected_op):

@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Клиенты и рассрочки
-# Версия: 1.12 (оплаченные платежи нельзя править здесь — только через аннулирование)
+# Версия: 1.13 (форма оплаты сразу под выбором клиента; квитанция и выписка после оплаты)
 
 import streamlit as st
 import pandas as pd
@@ -61,9 +61,10 @@ def show_clients_page():
         show_extra_tab(user_role, clients, clients_map, sales, payments)
 
 
-def show_work_tab(user_role, clients, clients_map, sales, payments, today):
-    st.subheader("Кто должен и приём оплаты")
+RECEIPT_KEY = "payment_receipt"
 
+
+def client_debts(sales, payments, today):
     by_client = {}
     for sale in sales:
         cid = sale.get("client_id")
@@ -71,26 +72,25 @@ def show_work_tab(user_role, clients, clients_map, sales, payments, today):
             continue
         sale_pays = [p for p in payments if p.get("sale_id") == sale.get("id")]
         paid = sum(float(p.get("amount_paid", 0) or 0) for p in sale_pays)
-        balance = float(sale.get("credit_balance", 0) or 0)
-        debt = balance - paid
+        debt = float(sale.get("credit_balance", 0) or 0) - paid
         unpaid = [p for p in sale_pays if float(p.get("amount_expected", 0) or 0) - float(p.get("amount_paid", 0) or 0) > 0.5]
         unpaid = sorted(unpaid, key=lambda p: parse_due(p.get("due_date")) or today)
         next_due = parse_due(unpaid[0].get("due_date")) if unpaid else None
         next_left = 0.0
         if unpaid:
             next_left = float(unpaid[0].get("amount_expected", 0) or 0) - float(unpaid[0].get("amount_paid", 0) or 0)
-
-        item = by_client.setdefault(cid, {
-            "debt": 0.0,
-            "next_due": None,
-            "next_left": 0.0,
-            "sales": [],
-        })
+        item = by_client.setdefault(cid, {"debt": 0.0, "next_due": None, "next_left": 0.0, "sales": []})
         item["debt"] += debt
         item["sales"].append(sale)
         if next_due and (item["next_due"] is None or next_due < item["next_due"]):
             item["next_due"] = next_due
             item["next_left"] = next_left
+    return by_client
+
+
+def show_work_tab(user_role, clients, clients_map, sales, payments, today):
+    st.subheader("Приём оплаты")
+    by_client = client_debts(sales, payments, today)
 
     rows = []
     for cid, item in by_client.items():
@@ -99,147 +99,131 @@ def show_work_tab(user_role, clients, clients_map, sales, payments, today):
         client = clients_map.get(cid, {})
         due = item["next_due"]
         if due and due < today:
-            status = "🔴 Просрочка"
+            status = "🔴"
         elif due and due == today:
-            status = "🟡 Сегодня"
+            status = "🟡"
         else:
-            status = "⚪ Позже"
-        rows.append({
-            "id": cid,
-            "fio": client.get("fio", "Неизвестный"),
-            "phone": client.get("phone") or "—",
-            "debt": item["debt"],
-            "next_due": due,
-            "next_left": item["next_left"],
-            "status": status,
-        })
-
+            status = "⚪"
+        rows.append({"id": cid, "fio": client.get("fio", "Неизвестный"), "phone": client.get("phone") or "—",
+                     "debt": item["debt"], "next_due": due, "next_left": item["next_left"], "status": status})
     rows.sort(key=lambda r: (r["next_due"] or datetime.max.date(), r["fio"]))
+
+    receipt = st.session_state.get(RECEIPT_KEY)
+    # клиент, которому только что приняли оплату, остаётся в списке, даже если долг закрыт
+    if receipt and receipt.get("client_id") in clients_map and not any(r["id"] == receipt["client_id"] for r in rows):
+        c = clients_map[receipt["client_id"]]
+        rows.insert(0, {"id": c["id"], "fio": c.get("fio", ""), "phone": c.get("phone") or "—", "debt": 0.0,
+                        "next_due": None, "next_left": 0.0, "status": "✅"})
 
     search = st.text_input("Поиск по фамилии или телефону", key="credit_search")
     if search:
         q = search.strip().lower()
         rows = [r for r in rows if q in r["fio"].lower() or q in str(r["phone"])]
+    if not rows:
+        st.info("Активных долгов нет." if not search else "Клиент не найден.")
+        return
 
-    left, right = st.columns([1.15, 1.4])
-    with left:
-        st.markdown(f"**Клиентов с долгом: {len(rows)}**")
-        if not rows:
-            st.info("Активных долгов нет.")
-        else:
-            labels = {}
-            for r in rows:
-                due_txt = r["next_due"].strftime("%d.%m.%Y") if r["next_due"] else "—"
-                label = f"{r['status']} | {r['fio']} | {int(r['debt']):,} сом | {due_txt}"
-                labels[label] = r
-            picked = st.radio("Выберите клиента", list(labels.keys()), key="credit_client_pick")
-            st.session_state["picked_credit_client"] = labels[picked]["id"]
+    # значения — id (не текст с суммой), чтобы выбор не сбрасывался, когда после оплаты меняется долг
+    labels = {}
+    for r in rows:
+        due_txt = r["next_due"].strftime("%d.%m.%Y") if r["next_due"] else "—"
+        labels[r["id"]] = f"{r['status']} {r['fio']} · {int(r['debt']):,} сом · {due_txt}".replace(",", " ")
+    st.caption(f"Клиентов с долгом: {len(rows)}. 🔴 просрочка · 🟡 сегодня · ⚪ позже")
+    if st.session_state.get("credit_client_pick") not in labels:
+        st.session_state.pop("credit_client_pick", None)
+    cid = st.selectbox("Клиент", list(labels.keys()), format_func=lambda i: labels.get(i, str(i)), key="credit_client_pick")
+    st.session_state["picked_credit_client"] = cid
+    client = clients_map.get(cid, {})
 
-    with right:
-        cid = st.session_state.get("picked_credit_client")
-        if not cid or cid not in by_client:
-            st.info("Выберите клиента слева.")
-            return
+    if receipt and receipt.get("client_id") != cid:
+        st.session_state.pop(RECEIPT_KEY, None)  # выбрали другого клиента — квитанцию убираем
+        receipt = None
 
-        client = clients_map.get(cid, {})
-        st.markdown(f"### {client.get('fio', 'Клиент')}")
-        st.caption(f"Телефон: {client.get('phone') or '—'} | Остаток: **{int(by_client[cid]['debt']):,} сом**")
-        st.button(
-            "📱 Выписка для клиента (скриншот)",
-            use_container_width=True,
-            on_click=open_client_statement,
-            args=(cid,),
-            key="open_statement_btn",
-        )
+    if receipt:
+        show_receipt(receipt, client, cid, sales, payments, today)
 
-        client_sales = [s for s in sales if s.get("client_id") == cid]
-        sale_labels = {}
-        for s in client_sales:
-            sale_pays = [p for p in payments if p.get("sale_id") == s.get("id")]
-            paid = sum(float(p.get("amount_paid", 0) or 0) for p in sale_pays)
-            debt = float(s.get("credit_balance", 0) or 0) - paid
-            if debt <= 0.5:
-                continue
-            label = f"{str(s.get('name', ''))[:55]} | долг {int(debt):,}"
-            sale_labels[label] = s
+    debt_now = by_client.get(cid, {}).get("debt", 0.0)
+    st.markdown(f"**{client.get('fio', 'Клиент')}** · 📞 {client.get('phone') or '—'} · долг **{int(debt_now):,} сом**".replace(",", " "))
 
-        if not sale_labels:
+    # ----- форма оплаты: сразу под выбором клиента -----
+    client_sales = [s for s in sales if s.get("client_id") == cid]
+    sale_labels = {}
+    for s in client_sales:
+        sale_pays = [p for p in payments if p.get("sale_id") == s.get("id")]
+        paid = sum(float(p.get("amount_paid", 0) or 0) for p in sale_pays)
+        debt = float(s.get("credit_balance", 0) or 0) - paid
+        if debt <= 0.5:
+            continue
+        sale_labels[s.get("id")] = (f"{str(s.get('name', ''))[:55]} | долг {int(debt):,}", s)
+    if not sale_labels:
+        if not receipt:
             st.success("По этому клиенту долга уже нет.")
-            return
+        return
 
-        sale_label = st.selectbox("Договор", list(sale_labels.keys()), key="credit_sale_pick")
-        sale = sale_labels[sale_label]
-        sale_pays = [p for p in payments if p.get("sale_id") == sale.get("id")]
-        unpaid = [
-            p for p in sale_pays
-            if float(p.get("amount_expected", 0) or 0) - float(p.get("amount_paid", 0) or 0) > 0.5
-        ]
-        unpaid = sorted(unpaid, key=lambda p: parse_due(p.get("due_date")) or today)
+    if st.session_state.get("credit_sale_pick") not in sale_labels:
+        st.session_state.pop("credit_sale_pick", None)
+    sale_id = st.selectbox("Договор", list(sale_labels.keys()), format_func=lambda i: sale_labels[i][0], key="credit_sale_pick")
+    sale = sale_labels[sale_id][1]
+    sale_pays = [p for p in payments if p.get("sale_id") == sale.get("id")]
+    unpaid = sorted(
+        [p for p in sale_pays if float(p.get("amount_expected", 0) or 0) - float(p.get("amount_paid", 0) or 0) > 0.5],
+        key=lambda p: parse_due(p.get("due_date")) or today,
+    )
+    pay_labels = {}
+    for p in unpaid:
+        due = parse_due(p.get("due_date"))
+        left_amt = float(p.get("amount_expected", 0) or 0) - float(p.get("amount_paid", 0) or 0)
+        due_txt = due.strftime("%d.%m.%Y") if due else "—"
+        mark = "просрочка" if due and due < today else ("сегодня" if due == today else "")
+        pay_labels[p["id"]] = (f"{due_txt} | осталось {int(left_amt):,} сом {mark}".strip(), p)
+    if not pay_labels:
+        st.info("Неоплаченных месяцев нет.")
+        return
 
-        pay_labels = {}
-        for p in unpaid:
+    if st.session_state.get("credit_pay_pick") not in pay_labels:
+        st.session_state.pop("credit_pay_pick", None)
+    pay_id = st.selectbox("Куда зачислить", list(pay_labels.keys()), format_func=lambda i: pay_labels[i][0], key="credit_pay_pick")
+    target = pay_labels[pay_id][1]
+    left_amt = float(target.get("amount_expected", 0) or 0) - float(target.get("amount_paid", 0) or 0)
+    amount = st.number_input("Сумма оплаты, сом", min_value=0.0, value=float(int(left_amt)), step=100.0,
+                             key=f"accept_amount_{target['id']}")
+    if st.button("💳 Принять оплату", type="primary", use_container_width=True):
+        accept_payment(unpaid, amount, client.get("fio", "клиент"), target["id"], cid)
+    st.caption("Если сумма больше этого месяца, остаток сам уйдёт на следующие платежи.")
+
+    # ----- подробности ниже -----
+    st.button("📱 Выписка для клиента (скриншот)", use_container_width=True,
+              on_click=open_client_statement, args=(cid,), key="open_statement_btn")
+    with st.expander("График этого договора"):
+        show_rows = []
+        for p in sorted(sale_pays, key=lambda x: parse_due(x.get("due_date")) or today):
             due = parse_due(p.get("due_date"))
-            left_amt = float(p.get("amount_expected", 0) or 0) - float(p.get("amount_paid", 0) or 0)
-            due_txt = due.strftime("%d.%m.%Y") if due else "—"
-            mark = "просрочка" if due and due < today else ("сегодня" if due == today else "")
-            label = f"{due_txt} | осталось {int(left_amt):,} сом {mark}".strip()
-            pay_labels[label] = p
+            show_rows.append({
+                "Дата": due.strftime("%d.%m.%Y") if due else str(p.get("due_date")),
+                "Ожидается": int(float(p.get("amount_expected", 0) or 0)),
+                "Оплачено": int(float(p.get("amount_paid", 0) or 0)),
+                "Статус": p.get("status", ""),
+            })
+        st.dataframe(pd.DataFrame(show_rows), use_container_width=True, hide_index=True)
 
-        if not pay_labels:
-            st.info("Неоплаченных месяцев нет.")
-            return
-
-        pay_label = st.selectbox("Куда зачислить", list(pay_labels.keys()), key="credit_pay_pick")
-        target = pay_labels[pay_label]
-        left_amt = float(target.get("amount_expected", 0) or 0) - float(target.get("amount_paid", 0) or 0)
-
-        amount = st.number_input(
-            "Сумма оплаты, сом",
-            min_value=0.0,
-            value=float(int(left_amt)),
-            step=100.0,
-            key=f"accept_amount_{target['id']}",
-        )
-        st.caption("Если сумма больше этого месяца, остаток сам уйдёт на следующие платежи.")
-        if st.button("💳 Принять оплату", type="primary", use_container_width=True):
-            accept_payment(unpaid, amount, client.get("fio", "клиент"), target["id"])
-
-        with st.expander("График этого договора"):
-            show_rows = []
-            for p in sorted(sale_pays, key=lambda x: parse_due(x.get("due_date")) or today):
-                due = parse_due(p.get("due_date"))
-                show_rows.append({
-                    "Дата": due.strftime("%d.%m.%Y") if due else str(p.get("due_date")),
-                    "Ожидается": int(float(p.get("amount_expected", 0) or 0)),
-                    "Оплачено": int(float(p.get("amount_paid", 0) or 0)),
-                    "Статус": p.get("status", ""),
-                })
-            st.dataframe(pd.DataFrame(show_rows), use_container_width=True, hide_index=True)
-
-        if user_role == "Администратор":
-            st.markdown("---")
-            st.markdown("**Правка графика (админ)**")
+    if user_role == "Администратор":
+        with st.expander("🛠️ Правка графика (админ)"):
             new_day = st.number_input("Поставить оставшиеся платежи на число", min_value=1, max_value=28, value=10, key="shift_day")
             if st.button("Сдвинуть оставшиеся на это число"):
                 shift_remaining(unpaid, int(new_day))
 
-            if unpaid:
-                edit_p = pay_labels[pay_label]
-                if float(edit_p.get("amount_paid", 0) or 0) > 0.5:
-                    from installment_logic import LOCKED_ROW_MESSAGE
-                    st.info(LOCKED_ROW_MESSAGE)
-                else:
-                    due = parse_due(edit_p.get("due_date")) or today
-                    new_due = st.date_input("Дата выбранного платежа", value=due, key=f"one_due_{edit_p['id']}")
-                    new_expected = st.number_input(
-                        "Сумма выбранного платежа",
-                        min_value=0.0,
-                        value=float(edit_p.get("amount_expected", 0) or 0),
-                        step=50.0,
-                        key=f"one_amt_{edit_p['id']}",
-                    )
-                    if st.button("Сохранить дату и сумму"):
-                        save_single_payment(sale, sale_pays, edit_p["id"], new_due, new_expected)
+            edit_p = target
+            if float(edit_p.get("amount_paid", 0) or 0) > 0.5:
+                from installment_logic import LOCKED_ROW_MESSAGE
+                st.info(LOCKED_ROW_MESSAGE)
+            else:
+                due = parse_due(edit_p.get("due_date")) or today
+                new_due = st.date_input("Дата выбранного платежа", value=due, key=f"one_due_{edit_p['id']}")
+                new_expected = st.number_input("Сумма выбранного платежа", min_value=0.0,
+                                               value=float(edit_p.get("amount_expected", 0) or 0), step=50.0,
+                                               key=f"one_amt_{edit_p['id']}")
+                if st.button("Сохранить дату и сумму"):
+                    save_single_payment(sale, sale_pays, edit_p["id"], new_due, new_expected)
 
             open_count = len([p for p in sale_pays if float(p.get("amount_paid", 0) or 0) <= 0.5])
             months = st.number_input("Разложить неоплаченный остаток на месяцев", min_value=1, max_value=36,
@@ -251,6 +235,35 @@ def show_work_tab(user_role, clients, clients_map, sales, payments, today):
             ):
                 rebuild_schedule(sale, sale_pays, int(months))
 
+    with st.expander(f"📋 Все должники ({len(rows)})"):
+        st.dataframe(pd.DataFrame([{
+            "": r["status"], "ФИО": r["fio"], "Телефон": r["phone"], "Долг": int(r["debt"]),
+            "Ближайший платёж": r["next_due"].strftime("%d.%m.%Y") if r["next_due"] else "—",
+        } for r in rows]), use_container_width=True, hide_index=True)
+
+
+def close_receipt():
+    st.session_state.pop(RECEIPT_KEY, None)
+
+
+def show_receipt(receipt, client, cid, sales, payments, today):
+    """Квитанция после оплаты: держится, пока не закроют или не выберут другого клиента."""
+    with st.container(border=True):
+        if receipt.get("ok"):
+            st.success(f"Оплата {int(receipt['applied']):,} сом принята · {receipt['client_name']} · {receipt['time']}".replace(",", " "), icon="✅")
+            if receipt.get("extra", 0) > 0.5:
+                st.warning(f"Лишние {int(receipt['extra']):,} сом некуда зачислить — долг по договору закрыт. Верните их клиенту.".replace(",", " "))
+            try:
+                from statement import build_statement, render_card, show_image_buttons
+                data = build_statement(cid, sales, payments, today)
+                render_card(client, data, today, show_closed=False, page_chrome=False)
+                show_image_buttons(client, data, today, False, cid, key_prefix="receipt")
+            except Exception as e:
+                st.caption(f"Выписку показать не получилось: {e}")
+        else:
+            st.error(f"Оплата НЕ сохранена: {receipt.get('error')}", icon="❌")
+        st.button("✖️ Закрыть", on_click=close_receipt, key="close_receipt", use_container_width=True)
+
 
 def open_client_statement(client_id):
     try:
@@ -260,48 +273,41 @@ def open_client_statement(client_id):
         pass
 
 
-def accept_payment(unpaid, amount, client_name, start_id):
-    if amount <= 0:
-        st.error("Введите сумму больше 0")
+def accept_payment(unpaid, amount, client_name, start_id, client_id=None):
+    """Записывает оплату. Если касса не записалась — строки графика возвращаются как были."""
+    from payment_logic import plan_payment
+    now = datetime.now()
+    base = {"client_id": client_id, "client_name": client_name, "time": now.strftime("%d.%m.%Y %H:%M")}
+    try:
+        plan = plan_payment(unpaid, amount, start_id)
+    except ValueError as e:
+        st.error(str(e))
         return
-    ordered = unpaid[:]
-    start = next((i for i, p in enumerate(ordered) if p["id"] == start_id), 0)
-    ordered = ordered[start:]
-    left_to_apply = float(amount)
-    applied = 0.0
-    for p in ordered:
-        if left_to_apply <= 0:
-            break
-        expected = float(p.get("amount_expected", 0) or 0)
-        paid = float(p.get("amount_paid", 0) or 0)
-        room = expected - paid
-        if room <= 0:
-            continue
-        take = min(room, left_to_apply)
-        new_paid = paid + take
-        status = "Оплачен" if new_paid + 0.5 >= expected else "Частично"
-        supabase.table("credit_payments").update({
-            "amount_paid": new_paid,
-            "status": status,
-        }).eq("id", p["id"]).execute()
-        left_to_apply -= take
-        applied += take
-
-    if applied <= 0:
-        st.error("Некуда зачислить оплату")
-        return
-
-    now_fmt = datetime.now().strftime("%d.%m.%Y %H:%M")
-    supabase.table("cash_operations").insert({
-        "date": now_fmt,
-        "amount": applied,
-        "comment": f"Погашение рассрочки от {client_name}",
-    }).execute()
-    extra = amount - applied
-    if extra > 0.5:
-        st.warning(f"Принято {int(applied)} сом. Лишние {int(extra)} сом некуда зачислить — долг закрыт.")
-    else:
-        st.success(f"Принято {int(applied)} сом от {client_name}")
+    done = []
+    try:
+        for ch in plan["changes"]:
+            supabase.table("credit_payments").update(ch["new"]).eq("id", ch["id"]).execute()
+            done.append(ch)
+        supabase.table("cash_operations").insert({
+            "date": now.strftime("%d.%m.%Y %H:%M"),
+            "amount": plan["applied"],
+            "comment": f"Погашение рассрочки от {client_name}",
+        }).execute()
+    except Exception as e:
+        rollback_failed = []
+        for ch in reversed(done):
+            try:
+                supabase.table("credit_payments").update(ch["old"]).eq("id", ch["id"]).execute()
+            except Exception:
+                rollback_failed.append(ch["id"])
+        msg = f"{e}."
+        if rollback_failed:
+            msg += f" ВНИМАНИЕ: не удалось вернуть платежи {rollback_failed} — проверьте график в «🛠️ Правка рассрочек»."
+        else:
+            msg += " Ничего не записано, попробуйте ещё раз."
+        st.session_state[RECEIPT_KEY] = {**base, "ok": False, "error": msg}
+        st.rerun()
+    st.session_state[RECEIPT_KEY] = {**base, "ok": True, "applied": plan["applied"], "extra": plan["extra"]}
     st.rerun()
 
 
