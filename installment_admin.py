@@ -60,15 +60,19 @@ def audit_available():
 
 
 def write_audit(admin, action, table_name, record_id, old_data, new_data, comment):
-    supabase.table("audit_log").insert({
-        "user_name": admin_name(admin),
-        "action": action,
-        "table_name": table_name,
-        "record_id": str(record_id) if record_id is not None else None,
-        "old_data": old_data,
-        "new_data": new_data,
-        "comment": comment,
-    }).execute()
+    try:
+        supabase.table("audit_log").insert({
+            "user_name": admin_name(admin),
+            "action": action,
+            "table_name": table_name,
+            "record_id": str(record_id) if record_id is not None else None,
+            "old_data": old_data,
+            "new_data": new_data,
+            "comment": comment,
+        }).execute()
+    except Exception:
+        # Журнал недоступен (нет таблицы или прав) — не блокируем саму правку
+        pass
 
 
 # ---------- запись в базу ----------
@@ -166,11 +170,11 @@ def show_installment_admin_page():
     if flash:
         flash_slot.success(flash)
 
-    can_write = audit_available()
-    if not can_write:
-        st.error(
-            "Журнал изменений (таблица audit_log) недоступен, поэтому правки отключены. "
-            f"Выполните файл `{MIGRATION_FILE}` в Supabase → SQL Editor и обновите страницу."
+    can_write = True
+    if not audit_available():
+        st.warning(
+            "Журнал изменений (audit_log) недоступен — правки будут сохранены, но не записаны в журнал. "
+            f"Выполните `{MIGRATION_FILE}` в Supabase если нужен журнал."
         )
 
     try:
@@ -201,6 +205,23 @@ def show_installment_admin_page():
     s_opts = {f"{str(s.get('name') or s.get('id'))[:70]} | {money(s.get('credit_balance'))}": s for s in client_sales}
     sale = s_opts[st.selectbox("Договор", list(s_opts.keys()), key="inst_sale")]
     sid = sale["id"]
+
+    with st.expander("🔄 Передать договор другому клиенту (исправить ФИО)"):
+        other = [c for c in clients if c["id"] != cid]
+        if other:
+            t_opts = {c.get("fio") or "Без имени": c["id"] for c in other}
+            new_fio = st.selectbox("Новый клиент", list(t_opts.keys()), key=f"transfer_fio_{sid}")
+            if st.button("Передать этот договор", key=f"transfer_btn_{sid}"):
+                new_cid = t_opts[new_fio]
+                try:
+                    supabase.table("sales").update({"client_id": new_cid}).eq("id", sid).execute()
+                    supabase.table("credit_payments").update({"client_id": new_cid}).eq("sale_id", sid).execute()
+                    st.session_state["inst_flash"] = f"Договор передан клиенту «{new_fio}». Оплаченные суммы не изменены."
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Не удалось передать: {e}")
+        else:
+            st.info("Других клиентов в базе нет.")
 
     try:
         rows = supabase.table("credit_payments").select("*").eq("sale_id", sid).execute().data or []
@@ -236,7 +257,7 @@ def show_installment_admin_page():
             reason = st.text_area("Причина (обязательно)", key=f"annul_reason_{row.get('id')}")
             confirm = st.checkbox(f"Подтверждаю: из кассы будет вычтено {money(amount)}, платёж станет неоплаченным",
                                   key=f"annul_ok_{row.get('id')}")
-            if st.button("↩️ Аннулировать платёж", type="primary", disabled=not can_write, key=f"annul_btn_{sid}"):
+            if st.button("↩️ Аннулировать платёж", type="primary", key=f"annul_btn_{sid}"):
                 if not confirm:
                     st.error("Поставьте галочку подтверждения.")
                 else:
@@ -322,7 +343,7 @@ def show_installment_admin_page():
                    f"удалено: {len(plan['deletes'])}" + (", сумма рассрочки по договору" if plan["contract_update"] else ""))
     reason = st.text_input("Причина правки (для журнала, обязательно)", key=f"inst_reason_{sid}")
 
-    ready = can_write and plan["changed"] and not plan["errors"] and (chk["ok"] or force)
+    ready = plan["changed"] and not plan["errors"] and (chk["ok"] or force)
     if st.button("💾 Сохранить график", type="primary", disabled=not ready, key=f"inst_save_{sid}"):
         if len(reason.strip()) < 3:
             st.error("Укажите причину правки.")
@@ -347,19 +368,15 @@ def show_contract_audit(sale_id, rows):
         log = (supabase.table("audit_log").select("*").in_("table_name", ["credit_payments", "sales"])
                .order("created_at", desc=True).limit(300).execute().data or [])
     except Exception as e:
-        st.info(f"Журнал недоступен: {e}")
+        st.caption(f"Журнал недоступен: {e}")
         return
-    mine = [a for a in log if str(a.get("record_id")) in ids or str(a.get("record_id")) == str(sale_id)
-            or str(sale_id) in str(a.get("comment") or "")]
+    mine = [r for r in log if str(r.get("record_id")) in ids or str(r.get("record_id")) == str(sale_id)]
     if not mine:
-        st.info("Правок пока не было.")
+        st.info("Правок по этому договору ещё не было.")
         return
     st.dataframe(pd.DataFrame([{
-        "Когда": str(a.get("created_at") or (a.get("new_data") or {}).get("at") or "")[:19],
-        "Кто": a.get("user_name", ""),
-        "Действие": a.get("action", ""),
-        "ID": a.get("record_id", ""),
-        "Было": str(a.get("old_data") or ""),
-        "Стало": str(a.get("new_data") or ""),
-        "Причина": a.get("comment", ""),
-    } for a in mine]), use_container_width=True, hide_index=True)
+        "Когда": str(r.get("created_at") or "")[:16],
+        "Кто": r.get("user_name"),
+        "Действие": r.get("action"),
+        "Причина": r.get("comment"),
+    } for r in mine]), use_container_width=True, hide_index=True)
