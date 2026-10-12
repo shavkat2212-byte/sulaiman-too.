@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Главный модуль: Авторизация и Маршрутизация
-# Версия программы: 1.10.1 (пустой выбор клиента и передача договора)
+# Версия программы: 1.11.0 (пустые selectbox по умолчанию, передача договора, правки без блокировки журналом)
 
 import streamlit as st
 from utils import (
@@ -105,7 +105,7 @@ if st.sidebar.button("🔄 Обновить данные", use_container_width=T
     st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Магазин «Сулайман-Тоо» v1.10.1")
+st.sidebar.caption("Магазин «Сулайман-Тоо» v1.11.0")
 
 if choice == "📦 Склад":
     show_stock_page()
