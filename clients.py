@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Клиенты и рассрочки
-# Версия: 1.13 (форма оплаты сразу под выбором клиента; квитанция и выписка после оплаты)
+# Версия: 1.14 (пустые selectbox, передача договора другому клиенту, правки без обязательного журнала)
 
 import streamlit as st
 import pandas as pd
@@ -129,9 +129,24 @@ def show_work_tab(user_role, clients, clients_map, sales, payments, today):
         due_txt = r["next_due"].strftime("%d.%m.%Y") if r["next_due"] else "—"
         labels[r["id"]] = f"{r['status']} {r['fio']} · {int(r['debt']):,} сом · {due_txt}".replace(",", " ")
     st.caption(f"Клиентов с долгом: {len(rows)}. 🔴 просрочка · 🟡 сегодня · ⚪ позже")
-    if st.session_state.get("credit_client_pick") not in labels:
-        st.session_state.pop("credit_client_pick", None)
-    cid = st.selectbox("Клиент", list(labels.keys()), format_func=lambda i: labels.get(i, str(i)), key="credit_client_pick")
+    client_options = [None] + list(labels.keys())
+    def client_format(i):
+        if i is None:
+            return "— Выберите клиента —"
+        return labels.get(i, str(i))
+    if st.session_state.get("credit_client_pick") not in client_options:
+        st.session_state["credit_client_pick"] = None
+    cid = st.selectbox("Клиент", client_options, format_func=client_format, key="credit_client_pick")
+    if cid is None:
+        st.info("Выберите клиента для оплаты.")
+        return
+
+    # При смене клиента очищаем выбор договора и платежа
+    if st.session_state.get("credit_bound_client") != cid:
+        st.session_state.pop("credit_sale_pick", None)
+        st.session_state.pop("credit_pay_pick", None)
+        st.session_state["credit_bound_client"] = cid
+
     st.session_state["picked_credit_client"] = cid
     client = clients_map.get(cid, {})
 
@@ -160,9 +175,17 @@ def show_work_tab(user_role, clients, clients_map, sales, payments, today):
             st.success("По этому клиенту долга уже нет.")
         return
 
-    if st.session_state.get("credit_sale_pick") not in sale_labels:
-        st.session_state.pop("credit_sale_pick", None)
-    sale_id = st.selectbox("Договор", list(sale_labels.keys()), format_func=lambda i: sale_labels[i][0], key="credit_sale_pick")
+    sale_options = [None] + list(sale_labels.keys())
+    def sale_format(i):
+        if i is None:
+            return "— Выберите договор —"
+        return sale_labels[i][0]
+    if st.session_state.get("credit_sale_pick") not in sale_options:
+        st.session_state["credit_sale_pick"] = None
+    sale_id = st.selectbox("Договор", sale_options, format_func=sale_format, key="credit_sale_pick")
+    if sale_id is None:
+        st.info("Выберите договор.")
+        return
     sale = sale_labels[sale_id][1]
     sale_pays = [p for p in payments if p.get("sale_id") == sale.get("id")]
     unpaid = sorted(
@@ -180,9 +203,17 @@ def show_work_tab(user_role, clients, clients_map, sales, payments, today):
         st.info("Неоплаченных месяцев нет.")
         return
 
-    if st.session_state.get("credit_pay_pick") not in pay_labels:
-        st.session_state.pop("credit_pay_pick", None)
-    pay_id = st.selectbox("Куда зачислить", list(pay_labels.keys()), format_func=lambda i: pay_labels[i][0], key="credit_pay_pick")
+    pay_options = [None] + list(pay_labels.keys())
+    def pay_format(i):
+        if i is None:
+            return "— Выберите платёж —"
+        return pay_labels[i][0]
+    if st.session_state.get("credit_pay_pick") not in pay_options:
+        st.session_state["credit_pay_pick"] = None
+    pay_id = st.selectbox("Куда зачислить", pay_options, format_func=pay_format, key="credit_pay_pick")
+    if pay_id is None:
+        st.info("Выберите платёж.")
+        return
     target = pay_labels[pay_id][1]
     left_amt = float(target.get("amount_expected", 0) or 0) - float(target.get("amount_paid", 0) or 0)
     amount = st.number_input("Сумма оплаты, сом", min_value=0.0, value=float(int(left_amt)), step=100.0,
@@ -234,6 +265,16 @@ def show_work_tab(user_role, clients, clients_map, sales, payments, today):
                      "поровну, чтобы весь график = сумме рассрочки по договору. Изменения пишутся в журнал.",
             ):
                 rebuild_schedule(sale, sale_pays, int(months))
+
+        with st.expander("🔄 Передать договор другому клиенту"):
+            other_clients = [c for c in clients if c["id"] != cid]
+            if other_clients:
+                t_opts = {c.get("fio") or "Без имени": c["id"] for c in other_clients}
+                new_fio = st.selectbox("Новый клиент (ФИО)", list(t_opts.keys()), key="transfer_client_pick")
+                if st.button("Передать этот договор", type="secondary"):
+                    transfer_sale_to_client(sale.get("id"), t_opts[new_fio])
+            else:
+                st.info("Других клиентов нет.")
 
     with st.expander(f"📋 Все должники ({len(rows)})"):
         st.dataframe(pd.DataFrame([{
@@ -322,10 +363,24 @@ def shift_remaining(unpaid, pay_day):
     st.rerun()
 
 
+def transfer_sale_to_client(sale_id, new_client_id):
+    """Передаёт договор другому клиенту: меняет только client_id, оплаты не трогает."""
+    try:
+        supabase.table("sales").update({"client_id": new_client_id}).eq("id", sale_id).execute()
+        supabase.table("credit_payments").update({"client_id": new_client_id}).eq("sale_id", sale_id).execute()
+        st.success("Договор передан новому клиенту. Оплаченные суммы и история не изменены.")
+        st.session_state.pop("credit_client_pick", None)
+        st.session_state.pop("credit_sale_pick", None)
+        st.session_state.pop("credit_pay_pick", None)
+        st.rerun()
+    except Exception as e:
+        st.error(f"Ошибка передачи договора: {e}")
+
+
 def save_single_payment(sale, sale_pays, row_id, new_due, new_amount):
     """Правка одного неоплаченного платежа: проверка админа и журнал — через installment_admin."""
     from installment_logic import plan_single_row_edit
-    from installment_admin import NotAdmin, apply_schedule_plan, audit_available
+    from installment_admin import NotAdmin, apply_schedule_plan
     try:
         plan = plan_single_row_edit(sale, sale_pays, row_id, new_due, new_amount)
     except ValueError as e:
@@ -336,9 +391,6 @@ def save_single_payment(sale, sale_pays, row_id, new_due, new_amount):
         return
     if not plan["changed"]:
         st.info("Ничего не изменилось")
-        return
-    if not audit_available():
-        st.error("Журнал audit_log недоступен — выполните migrations/001_audit_log.sql в Supabase и повторите.")
         return
     try:
         apply_schedule_plan(sale, plan, "Правка одного платежа (Клиенты)")
@@ -355,7 +407,7 @@ def save_single_payment(sale, sale_pays, row_id, new_due, new_amount):
 def rebuild_schedule(sale, sale_pays, months):
     """Пересобирает только неоплаченные строки; оплаченные и частичные не трогает."""
     from installment_logic import plan_rebuild_unpaid
-    from installment_admin import NotAdmin, apply_schedule_plan, audit_available
+    from installment_admin import NotAdmin, apply_schedule_plan
     try:
         plan = plan_rebuild_unpaid(sale, sale_pays, months, datetime.now().date())
     except ValueError as e:
@@ -363,9 +415,6 @@ def rebuild_schedule(sale, sale_pays, months):
         return
     if plan["errors"]:
         st.error("; ".join(plan["errors"]))
-        return
-    if not audit_available():
-        st.error("Журнал audit_log недоступен — выполните migrations/001_audit_log.sql в Supabase и повторите.")
         return
     try:
         apply_schedule_plan(sale, plan, f"Пересоздание неоплаченных платежей на {months} мес.")
