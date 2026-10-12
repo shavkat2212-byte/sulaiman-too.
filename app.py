@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Главный модуль: Авторизация и Маршрутизация
-# Версия программы: 1.10.0 (квитанция после оплаты, форма оплаты наверху, журнал изменений)
+# Версия программы: 1.10.1 (пустой выбор клиента и передача договора)
 
 import streamlit as st
 from utils import (
@@ -95,12 +95,17 @@ choice = st.sidebar.radio(
 )
 st.session_state.menu_choice = choice
 
+if choice == "👥 Клиенты" and st.session_state.get("_last_menu") != "👥 Клиенты":
+    for k in ("credit_client_pick", "credit_sale_pick", "credit_pay_pick", "credit_bound_client", "_clients_entry"):
+        st.session_state.pop(k, None)
+st.session_state["_last_menu"] = choice
+
 if st.sidebar.button("🔄 Обновить данные", use_container_width=True):
     clear_data_cache()
     st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Магазин «Сулайман-Тоо» v1.10.0")
+st.sidebar.caption("Магазин «Сулайман-Тоо» v1.10.1")
 
 if choice == "📦 Склад":
     show_stock_page()
