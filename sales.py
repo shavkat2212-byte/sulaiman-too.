@@ -8,6 +8,9 @@ from datetime import datetime
 from database import supabase
 
 
+from installment_logic import add_month, month_schedule
+
+
 def add_months(start_date, months, pay_day):
     year = start_date.year
     month = start_date.month + months
@@ -227,7 +230,9 @@ def show_sales_page():
         c_r1, c_r2, c_r3 = st.columns(3)
         down_payment = c_r1.number_input("💵 Первоначальный взнос, сом", min_value=0.0, max_value=float(total_cart_sum), value=0.0)
         months = c_r2.number_input("📅 Срок рассрочки (месяцев)", min_value=1, max_value=24, value=6)
-        pay_day = c_r3.number_input("День оплаты каждого месяца", min_value=1, max_value=28, value=min(sale_date.day, 28))
+        first_due = c_r3.date_input("📅 Дата первого платежа", value=add_month(sale_date, 1, sale_date.day),
+                                    min_value=sale_date, format="DD.MM.YYYY", key="sale_first_due")
+        pay_day = first_due.day
 
         net_debt = total_cart_sum - down_payment
         default_markup = months * 3
@@ -244,12 +249,13 @@ def show_sales_page():
         st.warning(f"📊 Чистый долг: {net_debt:,.0f} | Всего с наценкой: {total_with_markup:,.0f} | Переплата: {overpayment:,.0f}")
 
         st.markdown("#### 🗓️ График платежей")
-        st.caption(f"Все платежи будут {int(pay_day)}-го числа каждого месяца.")
+        st.caption(f"Первый платёж {first_due.strftime('%d.%m.%Y')}, дальше каждый месяц {int(pay_day)}-го числа "
+                   "(если в месяце нет такого числа — последний день месяца).")
 
         schedule_preview = []
         balance = float(total_with_markup)
         for i in range(1, int(months) + 1):
-            due = add_months(sale_date, i, pay_day)
+            due = month_schedule(first_due, int(months))[i - 1]
             if i == int(months):
                 amount = round(balance, 2)
             else:
@@ -364,7 +370,7 @@ def show_sales_page():
 
                 balance = float(total_with_markup)
                 for i in range(1, int(months) + 1):
-                    due = add_months(sale_date, i, pay_day)
+                    due = month_schedule(first_due, int(months))[i - 1]
                     if i == int(months):
                         amount = round(balance, 2)
                     else:
