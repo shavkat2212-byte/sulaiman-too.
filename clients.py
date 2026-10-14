@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Модуль: Клиенты и рассрочки
-# Версия: 1.14 (пустые selectbox, передача договора другому клиенту, правки без обязательного журнала)
+# Версия: 1.15 (быстрая оплата: один договор и ближайший месяц выбираются сами; пустые selectbox, передача договора другому клиенту, правки без обязательного журнала)
 
 import streamlit as st
 import pandas as pd
@@ -129,14 +129,20 @@ def show_work_tab(user_role, clients, clients_map, sales, payments, today):
         due_txt = r["next_due"].strftime("%d.%m.%Y") if r["next_due"] else "—"
         labels[r["id"]] = f"{r['status']} {r['fio']} · {int(r['debt']):,} сом · {due_txt}".replace(",", " ")
     st.caption(f"Клиентов с долгом: {len(rows)}. 🔴 просрочка · 🟡 сегодня · ⚪ позже")
-    client_options = [None] + list(labels.keys())
-    def client_format(i):
-        if i is None:
-            return "— Выберите клиента —"
-        return labels.get(i, str(i))
-    if st.session_state.get("credit_client_pick") not in client_options:
-        st.session_state["credit_client_pick"] = None
-    cid = st.selectbox("Клиент", client_options, format_func=client_format, key="credit_client_pick")
+    if search and len(rows) == 1:
+        # поиск нашёл ровно одного клиента — выбираем его сразу
+        cid = rows[0]["id"]
+        st.session_state["credit_client_pick"] = cid
+        st.caption(f"Клиент: {labels[cid]}")
+    else:
+        client_options = [None] + list(labels.keys())
+        def client_format(i):
+            if i is None:
+                return "— Выберите клиента —"
+            return labels.get(i, str(i))
+        if st.session_state.get("credit_client_pick") not in client_options:
+            st.session_state["credit_client_pick"] = None
+        cid = st.selectbox("Клиент", client_options, format_func=client_format, key="credit_client_pick")
     if cid is None:
         st.info("Выберите клиента для оплаты.")
         return
@@ -175,17 +181,22 @@ def show_work_tab(user_role, clients, clients_map, sales, payments, today):
             st.success("По этому клиенту долга уже нет.")
         return
 
-    sale_options = [None] + list(sale_labels.keys())
-    def sale_format(i):
-        if i is None:
-            return "— Выберите договор —"
-        return sale_labels[i][0]
-    if st.session_state.get("credit_sale_pick") not in sale_options:
-        st.session_state["credit_sale_pick"] = None
-    sale_id = st.selectbox("Договор", sale_options, format_func=sale_format, key="credit_sale_pick")
-    if sale_id is None:
-        st.info("Выберите договор.")
-        return
+    if len(sale_labels) == 1:
+        # один договор — выбирать не нужно
+        sale_id = next(iter(sale_labels))
+        st.caption(f"Договор: {sale_labels[sale_id][0]}")
+    else:
+        sale_options = [None] + list(sale_labels.keys())
+        def sale_format(i):
+            if i is None:
+                return "— Выберите договор —"
+            return sale_labels[i][0]
+        if st.session_state.get("credit_sale_pick") not in sale_options:
+            st.session_state["credit_sale_pick"] = None
+        sale_id = st.selectbox("Договор", sale_options, format_func=sale_format, key="credit_sale_pick")
+        if sale_id is None:
+            st.info("Выберите договор.")
+            return
     sale = sale_labels[sale_id][1]
     sale_pays = [p for p in payments if p.get("sale_id") == sale.get("id")]
     unpaid = sorted(
@@ -203,17 +214,15 @@ def show_work_tab(user_role, clients, clients_map, sales, payments, today):
         st.info("Неоплаченных месяцев нет.")
         return
 
-    pay_options = [None] + list(pay_labels.keys())
-    def pay_format(i):
-        if i is None:
-            return "— Выберите платёж —"
-        return pay_labels[i][0]
-    if st.session_state.get("credit_pay_pick") not in pay_options:
-        st.session_state["credit_pay_pick"] = None
-    pay_id = st.selectbox("Куда зачислить", pay_options, format_func=pay_format, key="credit_pay_pick")
-    if pay_id is None:
-        st.info("Выберите платёж.")
-        return
+    # по умолчанию — ближайший неоплаченный месяц; ручной выбор по желанию
+    pay_options = list(pay_labels.keys())
+    pick_key = f"credit_pay_pick_{sale_id}"
+    if st.session_state.get(pick_key) not in pay_options:
+        st.session_state[pick_key] = pay_options[0]
+    pay_id = st.session_state[pick_key]
+    st.caption(f"Зачислится на: {pay_labels[pay_id][0]}")
+    with st.expander("Выбрать месяц вручную"):
+        st.selectbox("Куда зачислить", pay_options, format_func=lambda i: pay_labels[i][0], key=pick_key)
     target = pay_labels[pay_id][1]
     left_amt = float(target.get("amount_expected", 0) or 0) - float(target.get("amount_paid", 0) or 0)
     amount = st.number_input("Сумма оплаты, сом", min_value=0.0, value=float(int(left_amt)), step=100.0,
