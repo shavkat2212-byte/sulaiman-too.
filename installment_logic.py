@@ -314,3 +314,114 @@ def plan_single_row_edit(sale, old_rows, row_id, new_due, new_amount):
         else:
             draft.append({"id": str(r.get("id")), "due": parse_day(r.get("due_date")), "amount": row_expected(r)})
     return plan_schedule_save(sale, old_rows, draft)
+
+
+# ---------- изменение срока (реструктуризация) ----------
+MARKUP_PER_MONTH = 3.0  # % за месяц, как при оформлении продажи (sales.py: наценка = срок × 3%)
+
+
+def net_debt(sale):
+    """Чистый долг без наценки: цена товара минус первый взнос."""
+    return max(round(num(sale.get("total_sale")) - num(sale.get("down_payment")), 2), 0.0)
+
+
+def suggest_total(sale, months, percent_per_month=MARKUP_PER_MONTH):
+    """Сумма рассрочки по стандартной наценке для нового срока (всего месяцев)."""
+    return float(round(net_debt(sale) * (1 + percent_per_month * int(months) / 100)))
+
+
+def plan_restructure(sale, old_rows, total_months, first_due, new_total=None):
+    """
+    Новый срок договора: total_months — весь срок (вместе с уже оплаченными месяцами).
+    Оплаченные/частично оплаченные строки не меняются. Остаток (new_total − их суммы)
+    делится поровну на оставшиеся месяцы, копеечный/сомовый остаток — в последний месяц.
+    new_total=None — сумма рассрочки не меняется.
+    """
+    total_months = int(total_months or 0)
+    first_due = parse_day(first_due)
+    if not first_due:
+        raise ValueError("Укажите дату первого неоплаченного платежа")
+    locked = [r for r in old_rows if is_locked(r)]
+    rest = total_months - len(locked)
+    if rest < 1:
+        raise ValueError(f"Срок должен быть больше уже оплаченных месяцев ({len(locked)})")
+    balance = num(sale.get("credit_balance")) if new_total is None else num(new_total)
+    open_needed = round(balance - sum(row_expected(r) for r in locked), 2)
+    if open_needed <= TOLERANCE:
+        raise ValueError("Нечего распределять: сумма рассрочки уже покрыта оплаченными платежами")
+    whole = open_needed == int(open_needed)
+    monthly = (open_needed // rest) if whole else round(open_needed / rest, 2)
+    dates = month_schedule(first_due, rest)
+    draft, left = [], open_needed
+    for i in range(rest):
+        pay = round(left, 2) if i == rest - 1 else monthly
+        left = round(left - pay, 2)
+        draft.append({"id": None, "due": dates[i], "amount": clean_amount(pay)})
+    old_draft = [{"id": str(r.get("id"))} for r in sort_rows(old_rows) if not is_locked(r)]
+    plan = plan_schedule_save(sale, old_rows, reuse_ids(draft, old_draft),
+                              None if new_total is None else balance)
+    plan["preview"] = draft
+    plan["restructure"] = {
+        "old": {"months": len(old_rows), "credit_balance": num(sale.get("credit_balance"))},
+        "new": {"months": total_months, "credit_balance": balance, "open_months": rest},
+    }
+    return plan
+
+
+# ---------- аннулирование всего договора ----------
+STATUS_ANNULLED = "Аннулирован"
+SALE_ANNULLED_PAYMENT = "Аннулирован"   # sales.payment: договор пропадает из долгов и отчётов
+SALE_ANNULLED_PREFIX = "[АННУЛИРОВАН] "
+
+
+def month_schedule(first_due, count):
+    """Даты платежей: первая выбрана в календаре, дальше каждый месяц тем же числом.
+    Если в месяце нет такого числа (31, 30, 29 февраля) — последний день месяца."""
+    first_due = parse_day(first_due)
+    return [add_month(first_due, i, first_due.day) for i in range(int(count))]
+
+
+def parse_goods(sale_name):
+    """«Договор рассрочки №… [Холодильник lg (1 шт.), Чайник (2 шт.)] — ФИО» → [(название, кол-во)]."""
+    import re
+    text = str(sale_name or "")
+    if "[" not in text or "]" not in text:
+        return []
+    inner = text[text.index("[") + 1:text.rindex("]")]
+    return [(m.group(1).strip(), int(m.group(2))) for m in re.finditer(r"\s*(.+?) \((\d+) шт\.\),?", inner)]
+
+
+def plan_contract_annulment(sale, rows, reason, client_name, now=None):
+    """Возвращает план полного аннулирования договора (без записи в базу)."""
+    now = now or datetime.now()
+    reason = str(reason or "").strip()
+    if len(reason) < MIN_REASON_LEN:
+        raise ValueError("Укажите причину аннулирования договора")
+    if str(sale.get("payment") or "") == SALE_ANNULLED_PAYMENT:
+        raise ValueError("Договор уже аннулирован")
+    stamp = now.strftime("%Y-%m-%d %H:%M")
+    paid = round(sum(row_paid(r) for r in rows), 2)
+    down = round(num(sale.get("down_payment")), 2)
+    cash = []
+    if paid > TOLERANCE:
+        cash.append({"date": stamp, "amount": -clean_amount(paid),
+                     "comment": f"{ANNUL_PREFIX} Возврат погашений по аннулированному договору {sale.get('id')} ({client_name}): {reason}"})
+    if down > TOLERANCE:
+        cash.append({"date": stamp, "amount": -clean_amount(down),
+                     "comment": f"{ANNUL_PREFIX} Возврат первого взноса по аннулированному договору {sale.get('id')} ({client_name}): {reason}"})
+    row_updates = [{"id": r.get("id"),
+                    "old": {"amount_paid": r.get("amount_paid"), "status": r.get("status")},
+                    "new": {"amount_paid": 0, "status": STATUS_ANNULLED}} for r in rows]
+    name = str(sale.get("name") or "")
+    sale_new = {"payment": SALE_ANNULLED_PAYMENT,
+                "name": name if name.startswith(SALE_ANNULLED_PREFIX) else SALE_ANNULLED_PREFIX + name}
+    return {
+        "cash_entries": cash,
+        "refund_total": clean_amount(paid + down),
+        "paid": clean_amount(paid), "down": clean_amount(down),
+        "row_updates": row_updates,
+        "sale_update": {"old": {"payment": sale.get("payment"), "name": sale.get("name"),
+                                "credit_balance": sale.get("credit_balance")}, "new": sale_new},
+        "goods": parse_goods(name),
+        "reason": reason,
+    }

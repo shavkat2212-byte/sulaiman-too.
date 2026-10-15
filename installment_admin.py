@@ -13,7 +13,7 @@ import streamlit as st
 
 from database import supabase
 from installment_logic import (
-    STATUS_UNPAID, generate_open_rows, is_locked, num, parse_day, plan_annulment,
+    STATUS_UNPAID, add_month, generate_open_rows, is_locked, num, parse_day, plan_annulment,
     plan_schedule_save, reuse_ids, row_expected, row_paid, schedule_totals, sort_rows,
 )
 
@@ -189,7 +189,7 @@ def show_installment_admin_page():
         st.info("Договоров рассрочки нет.")
         return
 
-    search = st.text_input("Поиск клиента по фамилии или телефону", key="inst_search")
+    search = st.text_input("Поиск договора по ФИО или телефону клиента", key="inst_search")
     found = with_sales
     if search:
         q = search.strip().lower()
@@ -197,13 +197,21 @@ def show_installment_admin_page():
     if not found:
         st.warning("Клиент не найден.")
         return
-    c_opts = {f"{c.get('fio') or 'Без имени'} ({c.get('phone') or 'без телефона'})": c["id"] for c in found}
-    cid = c_opts[st.selectbox("Клиент", list(c_opts.keys()), key="inst_client")]
+    found_ids = {c["id"] for c in found}
+    found_sales = sorted([s for s in sales if s.get("client_id") in found_ids],
+                         key=lambda s: (str(clients_map[s["client_id"]].get("fio") or ""), str(s.get("date") or "")))
+    s_opts = {}
+    for s in found_sales:
+        c = clients_map[s["client_id"]]
+        s_opts[f"{c.get('fio') or 'Без имени'} · {str(s.get('name') or s.get('id'))[:60]} | {money(s.get('credit_balance'))}"] = s
+    if len(s_opts) == 1:
+        label = next(iter(s_opts))
+        st.caption(f"Договор: {label}")
+    else:
+        label = st.selectbox(f"Договор (найдено {len(s_opts)})", list(s_opts.keys()), key="inst_sale")
+    sale = s_opts[label]
+    cid = sale["client_id"]
     client = clients_map[cid]
-
-    client_sales = sorted([s for s in sales if s.get("client_id") == cid], key=lambda s: str(s.get("date") or ""))
-    s_opts = {f"{str(s.get('name') or s.get('id'))[:70]} | {money(s.get('credit_balance'))}": s for s in client_sales}
-    sale = s_opts[st.selectbox("Договор", list(s_opts.keys()), key="inst_sale")]
     sid = sale["id"]
 
     with st.expander("🔄 Передать договор другому клиенту (исправить ФИО)"):
@@ -265,6 +273,7 @@ def show_installment_admin_page():
                         plan = plan_annulment(row, amount, reason, client.get("fio") or "клиент")
                         apply_annulment(plan, sid)
                         st.session_state.pop(draft_key(sid), None)
+                        st.session_state.pop(f"inst_balance_{sid}", None)
                         st.session_state["inst_flash"] = (
                             f"Аннулировано {money(plan['amount'])}. Касса уменьшена на эту сумму. "
                             "Исправьте график и примите оплату заново в «👥 Клиенты»."
@@ -274,6 +283,9 @@ def show_installment_admin_page():
                         st.error(str(e))
                     except Exception as e:
                         st.error(str(e))
+
+    show_restructure(sale, rows, locked)
+    show_contract_annul(sale, rows, client)
 
     # ----- неоплаченные строки: правка -----
     st.subheader("✏️ Неоплаченные платежи")
@@ -351,6 +363,7 @@ def show_installment_admin_page():
             try:
                 apply_schedule_plan(sale, plan, reason.strip())
                 st.session_state.pop(draft_key(sid), None)
+                st.session_state.pop(f"inst_balance_{sid}", None)
                 st.session_state["inst_flash"] = "График сохранён."
                 st.rerun()
             except NotAdmin as e:
@@ -360,6 +373,148 @@ def show_installment_admin_page():
 
     with st.expander("📋 Журнал правок этого договора"):
         show_contract_audit(sid, rows)
+
+
+def show_restructure(sale, rows, locked):
+    """Изменить срок рассрочки: новый срок → предпросмотр → сохранение."""
+    from installment_logic import plan_restructure, suggest_total, net_debt, MARKUP_PER_MONTH
+    sid = sale["id"]
+    with st.expander("📆 Изменить срок рассрочки (реструктуризация)"):
+        st.caption(f"Сейчас в графике {len(rows)} мес., оплачено {len(locked)}. Оплаченные платежи не меняются, "
+                   "остаток делится поровну на оставшиеся месяцы.")
+        c1, c2 = st.columns(2)
+        months = c1.number_input("Новый срок, всего месяцев", min_value=max(len(locked) + 1, 1), max_value=60,
+                                 value=max(len(rows), len(locked) + 1), step=1, key=f"rs_months_{sid}")
+        open_rows = [r for r in rows if not is_locked(r)]
+        first_default = parse_day(open_rows[0].get("due_date")) if open_rows else None
+        if not first_default:
+            last = max([parse_day(r.get("due_date")) for r in locked if parse_day(r.get("due_date"))], default=None)
+            first_default = (last and add_month(last, 1)) or datetime.now().date()
+        first_due = c2.date_input("📅 Дата первого неоплаченного платежа", value=first_default, format="DD.MM.YYYY",
+                                 key=f"rs_first_{sid}")
+        current = num(sale.get("credit_balance"))
+        suggested = suggest_total(sale, months)
+        st.markdown(f"Чистый долг (цена − взнос): **{money(net_debt(sale))}** · сумма рассрочки сейчас **{money(current)}** · "
+                    f"по наценке {MARKUP_PER_MONTH:g}%×{int(months)} мес. = **{money(suggested)}**")
+        mode = st.radio("Сумма рассрочки", ["Пересчитать наценку по новому сроку", "Оставить как есть", "Ввести вручную"],
+                        key=f"rs_mode_{sid}", horizontal=True)
+        if mode.startswith("Пересчитать"):
+            new_total = suggested
+        elif mode.startswith("Оставить"):
+            new_total = None
+        else:
+            new_total = st.number_input("Новая сумма рассрочки, сом", min_value=0.0, value=float(suggested),
+                                        step=100.0, key=f"rs_total_{sid}")
+        try:
+            plan = plan_restructure(sale, rows, months, first_due, new_total)
+        except ValueError as e:
+            st.error(str(e))
+            return
+        for err in plan["errors"]:
+            st.error(err)
+        rs = plan["restructure"]
+        st.markdown(f"**Предпросмотр:** {rs['old']['months']} → **{rs['new']['months']} мес.**, "
+                    f"сумма {money(rs['old']['credit_balance'])} → **{money(rs['new']['credit_balance'])}**")
+        prev = [{"Дата": due_txt(r), "Сумма": int(row_expected(r)), "Статус": "🔒 оплачен"} for r in locked]
+        prev += [{"Дата": r["due"].strftime("%d.%m.%Y"), "Сумма": r["amount"], "Статус": "новый"} for r in plan["preview"]]
+        st.dataframe(pd.DataFrame(prev), use_container_width=True, hide_index=True)
+        reason = st.text_input("Причина (для журнала, обязательно)", key=f"rs_reason_{sid}")
+        if st.button("💾 Сохранить новый срок", type="primary", disabled=bool(plan["errors"]), key=f"rs_save_{sid}"):
+            if len(reason.strip()) < 3:
+                st.error("Укажите причину.")
+                return
+            try:
+                full_reason = f"Изменение срока {rs['old']['months']}→{rs['new']['months']} мес.: {reason.strip()}"
+                apply_schedule_plan(sale, plan, full_reason)
+                write_audit(require_admin(), "RESTRUCTURE", "sales", sid, rs["old"], rs["new"], full_reason)
+                st.session_state.pop(draft_key(sid), None)
+                st.session_state.pop(f"inst_balance_{sid}", None)
+                st.session_state["inst_flash"] = f"Срок изменён: {rs['new']['months']} мес., сумма {money(rs['new']['credit_balance'])}."
+                st.rerun()
+            except NotAdmin as e:
+                st.error(str(e))
+            except Exception as e:
+                st.error(f"Ошибка сохранения: {e}. Обновите страницу и проверьте график.")
+
+
+def apply_contract_annulment(sale, plan, returns):
+    """returns — [(product_row, qty)] что вернуть на склад."""
+    from installment_logic import STATUS_ANNULLED
+    admin = require_admin()
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    sid = sale["id"]
+    note = f"Аннулирование договора {sid}: {plan['reason']}"
+    cash_ids = []
+    for entry in plan["cash_entries"]:
+        res = supabase.table("cash_operations").insert(entry).execute()
+        cid = res.data[0].get("id") if getattr(res, "data", None) else None
+        cash_ids.append(cid)
+        write_audit(admin, "CREATE", "cash_operations", cid, None, entry, note)
+    for u in plan["row_updates"]:
+        supabase.table("credit_payments").update(u["new"]).eq("id", u["id"]).execute()
+        write_audit(admin, "PAYMENT_ANNUL", "credit_payments", u["id"], u["old"], {**u["new"], "at": stamp}, note)
+    for prod, qty in returns:
+        new_qty = int(num(prod.get("qty"))) + int(qty)
+        supabase.table("products").update({"qty": new_qty}).eq("id", prod["id"]).execute()
+        write_audit(admin, "STOCK_RETURN", "products", prod["id"], {"qty": prod.get("qty")},
+                    {"qty": new_qty, "returned": int(qty), "at": stamp}, note)
+    supabase.table("sales").update(plan["sale_update"]["new"]).eq("id", sid).execute()
+    write_audit(admin, "CONTRACT_ANNUL", "sales", sid, plan["sale_update"]["old"],
+                {**plan["sale_update"]["new"], "refund_total": plan["refund_total"], "cash_operation_ids": cash_ids,
+                 "stock_returned": [{"product_id": p["id"], "qty": q} for p, q in returns], "at": stamp}, note)
+
+
+def show_contract_annul(sale, rows, client):
+    from installment_logic import plan_contract_annulment
+    sid = sale["id"]
+    with st.expander("⛔ Аннулировать весь договор"):
+        st.caption("Все принятые деньги (погашения и первый взнос) вычитаются из кассы записями [АННУЛИРОВАНИЕ], "
+                   "договор помечается аннулированным и пропадает из долгов. Ничего не удаляется. "
+                   "Потом договор можно оформить заново в «🛒 Продажи».")
+        reason = st.text_area("Причина (обязательно)", key=f"ca_reason_{sid}")
+        try:
+            plan = plan_contract_annulment(sale, rows, reason or "...", client.get("fio") or "клиент")
+        except ValueError as e:
+            st.error(str(e))
+            return
+        st.markdown(f"Вернуть клиенту из кассы: погашения **{money(plan['paid'])}** + взнос **{money(plan['down'])}** = "
+                    f"**{money(plan['refund_total'])}**")
+        returns = []
+        st.markdown("**Возврат товара на склад** (проверьте партию):")
+        if not plan["goods"]:
+            st.info("Товары в названии договора не найдены — склад верните вручную в «📦 Склад».")
+        try:
+            products = supabase.table("products").select("*").execute().data or [] if plan["goods"] else []
+        except Exception:
+            products = []
+        for n, (title, qty) in enumerate(plan["goods"]):
+            matches = [p for p in products if str(p.get("name") or "").strip().lower() == title.lower()]
+            if not matches:
+                st.warning(f"«{title}» ({qty} шт.) — партия на складе не найдена, верните вручную.")
+                continue
+            opts = {f"{p.get('name')} · приход {str(p.get('date') or '')[:10]} · сейчас {int(num(p.get('qty')))} шт. · #{p['id']}": p
+                    for p in matches}
+            c1, c2 = st.columns([3, 1])
+            pick = c1.selectbox(f"{title}: вернуть {qty} шт. в партию", list(opts.keys()), key=f"ca_batch_{sid}_{n}")
+            if c2.checkbox("Вернуть", value=True, key=f"ca_ret_{sid}_{n}"):
+                returns.append((opts[pick], qty))
+        ok = st.checkbox(f"Подтверждаю: из кассы будет вычтено {money(plan['refund_total'])}, договор будет аннулирован",
+                         key=f"ca_ok_{sid}")
+        if st.button("⛔ Аннулировать договор", type="primary", disabled=not ok, key=f"ca_btn_{sid}"):
+            if len((reason or "").strip()) < 3:
+                st.error("Укажите причину.")
+                return
+            try:
+                plan = plan_contract_annulment(sale, rows, reason, client.get("fio") or "клиент")
+                apply_contract_annulment(sale, plan, returns)
+                st.session_state.pop("inst_search", None)
+                st.session_state["inst_flash"] = (f"Договор аннулирован. Из кассы вычтено {money(plan['refund_total'])}"
+                                                  + (f", на склад возвращено позиций: {len(returns)}." if returns else "."))
+                st.rerun()
+            except NotAdmin as e:
+                st.error(str(e))
+            except Exception as e:
+                st.error(f"Ошибка: {e}. Обновите страницу и проверьте договор и кассу.")
 
 
 def show_contract_audit(sale_id, rows):
