@@ -356,12 +356,12 @@ def show_image_buttons(client, data, today, show_closed, cid, key_prefix="statem
         data=png,
         file_name=file_name,
         mime="image/png",
-        use_container_width=True,
+        width="stretch",
         key=f"{key_prefix}_png_download",
     )
     with st.expander("🖼️ Показать картинку"):
         st.caption("На телефоне можно нажать на картинку и удерживать, чтобы сохранить или отправить.")
-        st.image(png, use_container_width=True)
+        st.image(png, width="stretch")
 
 
 def show_statement_page():
@@ -400,7 +400,7 @@ def show_statement_page():
         wa = whatsapp_phone(client.get("phone"))
         if wa:
             url = f"https://wa.me/{wa}?text={quote(whatsapp_text(client, data, today))}"
-            st.link_button("💬 Открыть WhatsApp клиента", url, use_container_width=True)
+            st.link_button("💬 Открыть WhatsApp клиента", url, width="stretch")
         if sales:
             from obligation import obligation_button
             s_sorted = sorted(sales, key=lambda x: str(x.get("day") or x.get("date") or ""))
@@ -411,7 +411,7 @@ def show_statement_page():
                 obl_sale = s_opts[st.selectbox("Договор для бланка", list(s_opts.keys()), key="statement_obl_pick")]
             obligation_button(obl_sale["id"], key="obl_stmt")
         st.checkbox("Показывать закрытые договоры", key="statement_show_closed")
-        st.button("⬅️ Выбрать другого клиента", on_click=close_statement, use_container_width=True)
+        st.button("⬅️ Выбрать другого клиента", on_click=close_statement, width="stretch")
         return
 
     st.title(STATEMENT_MENU)
@@ -434,7 +434,7 @@ def show_statement_page():
     st.button(
         "📱 Показать выписку",
         type="primary",
-        use_container_width=True,
+        width="stretch",
         on_click=open_statement,
         args=(opts[label],),
     )

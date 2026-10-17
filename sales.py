@@ -131,7 +131,7 @@ def show_sales_page():
                 custom_price = st.number_input("💰 Цена за 1 шт, сом", min_value=0.0, value=float(chosen_batch["price"]))
                 st.caption(f"Закупка: {int(chosen_batch['cost'])} сом | На складе: {int(chosen_batch['qty'])} шт.")
 
-                if st.button("➕ Добавить в чек", use_container_width=True):
+                if st.button("➕ Добавить в чек", width="stretch"):
                     st.session_state.cart.append({
                         "batch_id": batch_id,
                         "name": sel_display,
@@ -274,7 +274,7 @@ def show_sales_page():
                 "Дата платежа": due.strftime("%d.%m.%Y"),
                 "Сумма": int(amount)
             })
-        st.dataframe(pd.DataFrame(schedule_preview), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(schedule_preview), width="stretch", hide_index=True)
 
         if client_id:
             client_row = client_opts[sel_client_label]
@@ -296,11 +296,11 @@ def show_sales_page():
                     data=doc_bytes,
                     file_name=f"Dogovor_{contract_preview_no}.docx",
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    use_container_width=True,
+                    width="stretch",
                 )
                 st.caption("Можно скачать до оформления и проверить. После проведения кнопка останется сверху.")
 
-    if st.button("🚀 Оформить и провести сделку", type="primary", use_container_width=True):
+    if st.button("🚀 Оформить и провести сделку", type="primary", width="stretch"):
         if pay_method == "Рассрочка" and not client_id:
             st.error("❌ Выберите или добавьте клиента для рассрочки!")
             return

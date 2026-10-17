@@ -122,7 +122,7 @@ def show_audit_journal():
     st.caption(f"Записей: {len(shown)} из {len(rows)}")
     if shown:
         st.dataframe(pd.DataFrame([{k: v for k, v in r.items() if k != "when"} for r in shown]),
-                     use_container_width=True, hide_index=True)
+                     width="stretch", hide_index=True)
 
 
 def show_cash_main(user_role):
@@ -242,7 +242,7 @@ def show_cash_main(user_role):
                 "Комментарий": clean_comment(op.get("comment", ""))[:70],
             })
         if moves:
-            st.dataframe(pd.DataFrame(moves), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(moves), width="stretch", hide_index=True)
         else:
             st.info("За этот день движений нет. Остаток на вечер равен утру.")
 
@@ -255,7 +255,7 @@ def show_cash_main(user_role):
         ]
         for col in show.columns[1:]:
             show[col] = show[col].map("{:,.0f}".format)
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        st.dataframe(show, width="stretch", hide_index=True)
         st.caption(f"Последний вечер: **{daily['balance_end'].iloc[-1]:,.0f} сом** | Касса сейчас: **{current_cash_in_hand:,.0f} сом**")
 
     st.markdown("---")
@@ -289,7 +289,7 @@ def show_cash_main(user_role):
         display_df = display_df.rename(columns={
             "id": "ID", "date": "Дата", "amount": "Сумма", "category": "Тип", "comment": "Комментарий"
         })
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        st.dataframe(display_df, width="stretch", hide_index=True)
         total_sum = filtered_ops["amount"].sum()
         st.caption(f"Операций: {len(filtered_ops)} | Сумма: {total_sum:,.0f} сом")
     else:

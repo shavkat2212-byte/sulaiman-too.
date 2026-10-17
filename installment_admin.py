@@ -257,7 +257,7 @@ def show_installment_admin_page():
         st.dataframe(pd.DataFrame([{
             "Дата": due_txt(r), "Ожидается": int(row_expected(r)), "Оплачено": int(row_paid(r)),
             "Статус": r.get("status") or "", "ID": str(r.get("id")),
-        } for r in locked]), use_container_width=True, hide_index=True)
+        } for r in locked]), width="stretch", hide_index=True)
 
         with st.expander("↩️ Аннулировать платёж"):
             l_opts = {f"{due_txt(r)} | оплачено {money(row_paid(r))} | #{r.get('id')}": r for r in locked}
@@ -325,7 +325,7 @@ def show_installment_admin_page():
     edited = st.data_editor(
         df,
         num_rows="dynamic",
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         key=f"inst_editor_{sid}_{ver}",
         column_config={
@@ -420,7 +420,7 @@ def show_restructure(sale, rows, locked):
                     f"сумма {money(rs['old']['credit_balance'])} → **{money(rs['new']['credit_balance'])}**")
         prev = [{"Дата": due_txt(r), "Сумма": int(row_expected(r)), "Статус": "🔒 оплачен"} for r in locked]
         prev += [{"Дата": r["due"].strftime("%d.%m.%Y"), "Сумма": r["amount"], "Статус": "новый"} for r in plan["preview"]]
-        st.dataframe(pd.DataFrame(prev), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(prev), width="stretch", hide_index=True)
         reason = st.text_input("Причина (для журнала, обязательно)", key=f"rs_reason_{sid}")
         if st.button("💾 Сохранить новый срок", type="primary", disabled=bool(plan["errors"]), key=f"rs_save_{sid}"):
             if len(reason.strip()) < 3:
@@ -537,4 +537,4 @@ def show_contract_audit(sale_id, rows):
         "Кто": r.get("user_name"),
         "Действие": r.get("action"),
         "Причина": r.get("comment"),
-    } for r in mine]), use_container_width=True, hide_index=True)
+    } for r in mine]), width="stretch", hide_index=True)

@@ -203,12 +203,29 @@ table.sch td.none{border:0}
 .sig{margin-top:10pt}
 @page{size:A4;margin:0}
 @media print{
-  body{background:#fff}
+  body{background:#fff;zoom:1 !important}
   .toolbar{display:none}
   .sheet{margin:0;box-shadow:none;width:210mm;min-height:auto}
   .wrap{overflow:visible}
 }
 """
+
+
+FIT_JS = """<script>
+// на телефоне лист A4 уменьшается по ширине экрана; при печати — обычный размер
+(function(){
+  function fit(){
+    var s=document.querySelector('.sheet'); if(!s) return;
+    document.body.style.zoom=1;
+    var w=document.documentElement.clientWidth, need=s.offsetWidth+16;
+    document.body.style.zoom = w < need ? (w/need).toFixed(3) : 1;
+  }
+  window.addEventListener('resize', fit);
+  window.addEventListener('beforeprint', function(){document.body.style.zoom=1;});
+  window.addEventListener('afterprint', fit);
+  fit();
+})();
+</script>"""
 
 
 def render_html(d, toolbar=True):
@@ -266,7 +283,8 @@ def render_html(d, toolbar=True):
 <div class="row small"><div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;подпись&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Ф. И. О.</div><div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;подпись&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Ф. И. О.</div></div>
 <p class="sig">Дата подписания: «____» ______________ 20___ г.</p>
 <p class="note">Составлено в двух экземплярах, по одному для каждой стороны.</p>
-</div></div></body></html>"""
+</div></div>
+{FIT_JS}</body></html>"""
 
 
 # ---------------- Word ----------------
@@ -438,30 +456,65 @@ def load_sale_data(sale_id):
     return build_obligation_data(sale, client, payments, seller_settings())
 
 
-def show_obligation(sale_id, key="obl"):
-    """Бланк на экране (с кнопкой «🖨 Печать») + «Скачать Word»."""
+def _embed_html(page_html, height):
+    """HTML бланка во встроенном окне: st.iframe (Streamlit ≥ 1.56), иначе старый components.html."""
     import streamlit as st
-    import streamlit.components.v1 as components
+    if hasattr(st, "iframe"):
+        st.iframe(page_html, height="content")  # высота по содержимому (на телефоне лист уменьшен)
+    else:
+        import streamlit.components.v1 as components
+        components.html(page_html, height=height, scrolling=True)
+
+
+def show_obligation(sale_id, key="obl"):
+    """Бланк на экране (с кнопкой «🖨 Печать») + «Скачать Word». Любая ошибка — видна, а не молча."""
+    import streamlit as st
     try:
         data = load_sale_data(sale_id)
+        page_html = render_html(data)
     except Exception as e:
         st.error(f"Бланк не получилось собрать: {e}")
         return
-    st.download_button("📝 Скачать Word", data=build_docx(data), file_name=f"Obyazatelstvo_{data['number']}.docx",
-                       mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                       key=f"{key}_docx_{sale_id}", use_container_width=True)
-    st.caption("«🖨 Печать» открывает печать бланка. С телефона удобнее скачать Word и распечатать.")
+    try:
+        docx_bytes = build_docx(data)
+        st.download_button("📝 Скачать Word", data=docx_bytes, file_name=f"Obyazatelstvo_{data['number']}.docx",
+                           mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                           key=f"{key}_docx_{sale_id}", width="stretch", on_click="ignore")
+    except Exception as e:
+        st.warning(f"Word-файл не получился ({e}), но бланк ниже можно распечатать.")
+    st.caption("«🖨 Печать» — над бланком. С телефона удобнее скачать Word и распечатать.")
     rows = schedule_layout(len(data["schedule"]))
-    components.html(render_html(data), height=1250 + max(0, rows - 6) * 25, scrolling=True)
+    try:
+        _embed_html(page_html, 1250 + max(0, rows - 6) * 25)
+    except Exception as e:
+        st.error(f"Не получилось показать бланк на экране: {e}. Скачайте Word.")
+
+
+def _open_flag(flag):
+    import streamlit as st
+    st.session_state[flag] = True
+
+
+def _close_flag(flag):
+    import streamlit as st
+    st.session_state[flag] = False
 
 
 def obligation_button(sale_id, key="obl"):
-    """Кнопка «📄 Бланк обязательства», под ней — бланк (переключатель)."""
+    """
+    «📄 Бланк обязательства» открывает бланк, «✖️ Скрыть бланк» — закрывает.
+    Состояние меняется в on_click (до перезапуска скрипта), а не переключателем внутри `if st.button`:
+    повторное/двойное нажатие или прерванный перезапуск больше не закрывают бланк обратно.
+    """
     import streamlit as st
     flag = f"{key}_open_{sale_id}"
-    if st.button("📄 Бланк обязательства", key=f"{key}_btn_{sale_id}", use_container_width=True):
-        st.session_state[flag] = not st.session_state.get(flag, False)
-    if st.session_state.get(flag):
+    if not st.session_state.get(flag):
+        st.button("📄 Бланк обязательства", key=f"{key}_btn_{sale_id}", width="stretch",
+                  on_click=_open_flag, args=(flag,))
+        return
+    st.button("✖️ Скрыть бланк", key=f"{key}_close_{sale_id}", width="stretch", on_click=_close_flag, args=(flag,))
+    with st.container(border=True):
+        st.markdown("**📄 Бланк обязательства**")
         show_obligation(sale_id, key=key)
 
 

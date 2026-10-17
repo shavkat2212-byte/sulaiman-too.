@@ -227,13 +227,15 @@ def show_work_tab(user_role, clients, clients_map, sales, payments, today):
     left_amt = float(target.get("amount_expected", 0) or 0) - float(target.get("amount_paid", 0) or 0)
     amount = st.number_input("Сумма оплаты, сом", min_value=0.0, value=float(int(left_amt)), step=100.0,
                              key=f"accept_amount_{target['id']}")
-    if st.button("💳 Принять оплату", type="primary", use_container_width=True):
+    if st.button("💳 Принять оплату", type="primary", width="stretch"):
         accept_payment(unpaid, amount, client.get("fio", "клиент"), target["id"], cid)
     st.caption("Если сумма больше этого месяца, остаток сам уйдёт на следующие платежи.")
 
     # ----- подробности ниже -----
-    st.button("📱 Выписка для клиента (скриншот)", use_container_width=True,
+    st.button("📱 Выписка для клиента (скриншот)", width="stretch",
               on_click=open_client_statement, args=(cid,), key="open_statement_btn")
+    from obligation import obligation_button
+    obligation_button(sale.get("id"), key="obl_clients")
     with st.expander("График этого договора"):
         show_rows = []
         for p in sorted(sale_pays, key=lambda x: parse_due(x.get("due_date")) or today):
@@ -244,7 +246,7 @@ def show_work_tab(user_role, clients, clients_map, sales, payments, today):
                 "Оплачено": int(float(p.get("amount_paid", 0) or 0)),
                 "Статус": p.get("status", ""),
             })
-        st.dataframe(pd.DataFrame(show_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(show_rows), width="stretch", hide_index=True)
 
     if user_role == "Администратор":
         with st.expander("🛠️ Правка графика (админ)"):
@@ -289,7 +291,7 @@ def show_work_tab(user_role, clients, clients_map, sales, payments, today):
         st.dataframe(pd.DataFrame([{
             "": r["status"], "ФИО": r["fio"], "Телефон": r["phone"], "Долг": int(r["debt"]),
             "Ближайший платёж": r["next_due"].strftime("%d.%m.%Y") if r["next_due"] else "—",
-        } for r in rows]), use_container_width=True, hide_index=True)
+        } for r in rows]), width="stretch", hide_index=True)
 
 
 def close_receipt():
@@ -312,7 +314,7 @@ def show_receipt(receipt, client, cid, sales, payments, today):
                 st.caption(f"Выписку показать не получилось: {e}")
         else:
             st.error(f"Оплата НЕ сохранена: {receipt.get('error')}", icon="❌")
-        st.button("✖️ Закрыть", on_click=close_receipt, key="close_receipt", use_container_width=True)
+        st.button("✖️ Закрыть", on_click=close_receipt, key="close_receipt", width="stretch")
 
 
 def open_client_statement(client_id):
@@ -484,7 +486,7 @@ def show_base_tab(clients):
                     st.rerun()
     if clients:
         df = pd.DataFrame(clients).drop(columns=["created_at"], errors="ignore")
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width="stretch", hide_index=True)
 
 
 def show_extra_tab(user_role, clients, clients_map, sales, payments):
@@ -507,7 +509,7 @@ def show_extra_tab(user_role, clients, clients_map, sales, payments):
             "Остаток": int(debt),
         })
     if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
     else:
         st.info("Активных рассрочек нет.")
 
