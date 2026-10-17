@@ -217,22 +217,7 @@ def show_installment_admin_page():
     from obligation import obligation_button
     obligation_button(sid, key="obl_admin")
 
-    with st.expander("🔄 Передать договор другому клиенту (исправить ФИО)"):
-        other = [c for c in clients if c["id"] != cid]
-        if other:
-            t_opts = {c.get("fio") or "Без имени": c["id"] for c in other}
-            new_fio = st.selectbox("Новый клиент", list(t_opts.keys()), key=f"transfer_fio_{sid}")
-            if st.button("Передать этот договор", key=f"transfer_btn_{sid}"):
-                new_cid = t_opts[new_fio]
-                try:
-                    supabase.table("sales").update({"client_id": new_cid}).eq("id", sid).execute()
-                    supabase.table("credit_payments").update({"client_id": new_cid}).eq("sale_id", sid).execute()
-                    st.session_state["inst_flash"] = f"Договор передан клиенту «{new_fio}». Оплаченные суммы не изменены."
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Не удалось передать: {e}")
-        else:
-            st.info("Других клиентов в базе нет.")
+    show_transfer(sale, client, clients)
 
     try:
         rows = supabase.table("credit_payments").select("*").eq("sale_id", sid).execute().data or []
@@ -518,6 +503,59 @@ def show_contract_annul(sale, rows, client):
                 st.error(str(e))
             except Exception as e:
                 st.error(f"Ошибка: {e}. Обновите страницу и проверьте договор и кассу.")
+
+
+def transfer_contract(sale, old_client, new_client, reason):
+    """Перенос договора на другого клиента: sales.client_id (+ ФИО в названии) и client_id всех строк графика.
+    Деньги и оплаты не меняются. Пишется в журнал."""
+    from client_logic import rename_contract
+    admin = require_admin()
+    if not new_client or new_client.get("id") == sale.get("client_id"):
+        raise ValueError("Выберите другого клиента")
+    if len(str(reason or "").strip()) < 3:
+        raise ValueError("Укажите причину переноса")
+    sid = sale["id"]
+    new_name = rename_contract(sale.get("name"), old_client.get("fio"), new_client.get("fio"))
+    sale_new = {"client_id": new_client["id"]}
+    if new_name != sale.get("name"):
+        sale_new["name"] = new_name
+    supabase.table("sales").update(sale_new).eq("id", sid).execute()
+    supabase.table("credit_payments").update({"client_id": new_client["id"]}).eq("sale_id", sid).execute()
+    write_audit(admin, "CONTRACT_TRANSFER", "sales", sid,
+                {"client_id": sale.get("client_id"), "client_fio": old_client.get("fio"), "name": sale.get("name")},
+                {**sale_new, "client_fio": new_client.get("fio"), "at": datetime.now().strftime("%Y-%m-%d %H:%M")},
+                f"Перенос договора {sid} на другого клиента: {str(reason).strip()}")
+
+
+def show_transfer(sale, client, clients, key_prefix="inst"):
+    from client_logic import client_label
+    sid = sale["id"]
+    with st.expander("🔄 Перенести на другого клиента (договор оформлен не на того)"):
+        other = {c["id"]: c for c in clients if c["id"] != sale.get("client_id")}
+        if not other:
+            st.info("Других клиентов в базе нет.")
+            return
+        st.caption(f"Сейчас договор на: **{client_label(client)}**. Оплаты, график и касса не меняются — "
+                   "меняется только клиент (и ФИО в названии договора).")
+        new_id = st.selectbox("Новый клиент", list(other.keys()), index=None, key=f"{key_prefix}_transfer_{sid}",
+                              format_func=lambda i: client_label(other[i]), placeholder="Начните вводить ФИО...")
+        reason = st.text_input("Причина (для журнала)", key=f"{key_prefix}_transfer_reason_{sid}",
+                               placeholder="например: при оформлении выбран не тот клиент")
+        if new_id is not None:
+            st.info(f"Договор будет перенесён: {client_label(client)} → **{client_label(other[new_id])}**")
+        if st.button("🔄 Перенести договор", key=f"{key_prefix}_transfer_btn_{sid}", disabled=new_id is None):
+            try:
+                transfer_contract(sale, client, other[new_id], reason)
+                st.session_state["inst_flash"] = f"Договор перенесён на «{other[new_id].get('fio')}». Оплаты не изменены."
+                for k in ("inst_search", "credit_client_pick", "credit_sale_pick", "credit_bound_client"):
+                    st.session_state.pop(k, None)
+                st.rerun()
+            except NotAdmin as e:
+                st.error(str(e))
+            except ValueError as e:
+                st.error(str(e))
+            except Exception as e:
+                st.error(f"Не удалось перенести: {e}")
 
 
 def show_contract_audit(sale_id, rows):

@@ -9,6 +9,41 @@ from database import supabase
 
 
 from installment_logic import add_month, month_schedule
+from client_logic import client_label, find_duplicates, new_client_payload
+
+MODE_EXISTING = "Выбрать существующего"
+MODE_NEW = "Добавить нового"
+NEW_CLIENT_KEYS = ("nc_fio", "nc_phone", "nc_address", "nc_passport", "nc_force_new")
+
+
+def apply_pending_client():
+    """После сохранения клиента/сделки: режим «существующий» с этим клиентом (до создания виджетов)."""
+    cid = st.session_state.pop("_pending_client_select", None)
+    if cid is not None:
+        st.session_state["client_mode"] = MODE_EXISTING
+        st.session_state["sale_client_select"] = cid
+        for k in NEW_CLIENT_KEYS:
+            st.session_state.pop(k, None)
+
+
+def use_existing_client(cid):
+    st.session_state["_pending_client_select"] = cid
+
+
+def save_new_client_cb(clients_all):
+    payload, errors, _ = new_client_payload(*(st.session_state.get(k) for k in NEW_CLIENT_KEYS[:4]))
+    if errors:
+        st.session_state["_nc_error"] = "; ".join(errors)
+        return
+    if find_duplicates(clients_all, payload["fio"], payload["phone"]) and not st.session_state.get("nc_force_new"):
+        st.session_state["_nc_error"] = "Похожий клиент уже есть — выберите его или отметьте «Это другой человек»."
+        return
+    try:
+        res = supabase.table("clients").insert(payload).execute()
+        st.session_state["_pending_client_select"] = res.data[0]["id"]
+        st.session_state["_nc_ok"] = f"Клиент {payload['fio']} сохранён и выбран."
+    except Exception as e:
+        st.session_state["_nc_error"] = f"Не удалось сохранить клиента: {e}"
 
 
 def add_months(start_date, months, pay_day):
@@ -196,44 +231,64 @@ def show_sales_page():
     pay_day = sale_date.day if sale_date.day <= 28 else 28
     client_opts = {}
     sel_client_label = ""
+    new_client_ready = None
     schedule_preview = []
 
     if pay_method == "Рассрочка":
         st.markdown("#### 👤 Клиент")
+        clients_all = supabase.table("clients").select("*").order("fio").execute().data or []
+        clients_by_id = {c["id"]: c for c in clients_all}
+        apply_pending_client()
+        if st.session_state.get("_nc_error"):
+            st.error(st.session_state.pop("_nc_error"))
+        if st.session_state.get("_nc_ok"):
+            st.success(st.session_state.pop("_nc_ok"))
         client_mode = st.radio(
             "Клиент",
-            ["Выбрать существующего", "Добавить нового"],
+            [MODE_EXISTING, MODE_NEW],
             horizontal=True,
             key="client_mode"
         )
 
-        if client_mode == "Добавить нового":
-            with st.form("new_client_in_sale", clear_on_submit=True):
-                new_fio = st.text_input("ФИО клиента").strip()
-                new_phone = st.text_input("Телефон").strip()
-                new_address = st.text_input("Адрес").strip()
-                new_passport = st.text_area("Паспортные данные").strip()
-                if st.form_submit_button("💾 Сохранить клиента"):
-                    if not new_fio:
-                        st.error("Укажите ФИО")
-                    else:
-                        supabase.table("clients").insert({
-                            "fio": new_fio,
-                            "phone": new_phone if new_phone else None,
-                            "address": new_address if new_address else None,
-                            "passport": new_passport if new_passport else None
-                        }).execute()
-                        st.success(f"Клиент {new_fio} добавлен. Теперь выберите его выше.")
-                        st.rerun()
-
-        clients_res = supabase.table("clients").select("*").order("fio").execute()
-        if not clients_res.data:
-            st.warning("Клиентов пока нет. Добавьте нового выше.")
+        if client_mode == MODE_NEW:
+            # Поля без st.form: значения сразу доступны кнопке «Оформить», отдельное сохранение не обязательно
+            with st.container(border=True):
+                st.text_input("ФИО клиента *", key="nc_fio")
+                st.text_input("Телефон", key="nc_phone", placeholder="0555 12-34-56")
+                st.text_input("Адрес", key="nc_address")
+                st.text_area("Паспортные данные", key="nc_passport")
+                payload, nc_errors, nc_warnings = new_client_payload(
+                    st.session_state.get("nc_fio"), st.session_state.get("nc_phone"),
+                    st.session_state.get("nc_address"), st.session_state.get("nc_passport"))
+                for w in nc_warnings:
+                    if st.session_state.get("nc_fio"):
+                        st.caption(f"⚠️ {w}")
+                dups = find_duplicates(clients_all, payload["fio"], payload["phone"]) if payload["fio"] or payload["phone"] else []
+                if dups:
+                    st.warning("Похожий клиент уже есть в базе (тот же телефон или ФИО):")
+                    for d in dups[:5]:
+                        st.button(f"✅ Оформить на существующего: {client_label(d)}", key=f"nc_use_{d['id']}",
+                                  on_click=use_existing_client, args=(d["id"],), width="stretch")
+                    st.checkbox("Это другой человек — создать нового клиента", key="nc_force_new")
+                st.button("💾 Сохранить клиента (необязательно — сохранится и при оформлении)", key="nc_save",
+                          on_click=save_new_client_cb, args=(clients_all,))
+            if not nc_errors and (not dups or st.session_state.get("nc_force_new")):
+                new_client_ready = payload
+            sel_client_name = payload["fio"]
         else:
-            client_opts = {f"{c['fio']} ({c.get('phone') or 'без телефона'})": c for c in clients_res.data}
-            sel_client_label = st.selectbox("Выберите клиента", list(client_opts.keys()), key="sale_client_select")
-            client_id = client_opts[sel_client_label]["id"]
-            sel_client_name = client_opts[sel_client_label]["fio"]
+            if not clients_all:
+                st.warning("Клиентов пока нет. Выберите «Добавить нового».")
+            else:
+                ids = [c["id"] for c in clients_all]
+                if st.session_state.get("sale_client_select") not in ids:
+                    st.session_state["sale_client_select"] = None
+                client_id = st.selectbox("Выберите клиента", ids, index=None, key="sale_client_select",
+                                         format_func=lambda i: client_label(clients_by_id[i]),
+                                         placeholder="Начните вводить ФИО...")
+                if client_id is not None:
+                    sel_client_label = client_id
+                    sel_client_name = clients_by_id[client_id]["fio"]
+                    client_opts = {client_id: clients_by_id[client_id]}
 
         c_r1, c_r2, c_r3 = st.columns(3)
         down_payment = c_r1.number_input("💵 Первоначальный взнос, сом", min_value=0.0, max_value=float(total_cart_sum), value=0.0)
@@ -300,10 +355,35 @@ def show_sales_page():
                 )
                 st.caption("Можно скачать до оформления и проверить. После проведения кнопка останется сверху.")
 
+    if pay_method == "Рассрочка":
+        if client_id:
+            c = client_opts.get(client_id, {})
+            st.info(f"👤 Рассрочка будет оформлена на: **{c.get('fio')}**, 📞 {c.get('phone') or 'без телефона'}")
+        elif new_client_ready:
+            st.info(f"👤 Рассрочка будет оформлена на **нового клиента: {new_client_ready['fio']}**, "
+                    f"📞 {new_client_ready['phone'] or 'без телефона'} — клиент сохранится вместе со сделкой")
+        else:
+            st.warning("👤 Клиент не выбран — оформить рассрочку пока нельзя.")
+
     if st.button("🚀 Оформить и провести сделку", type="primary", width="stretch"):
         if pay_method == "Рассрочка" and not client_id:
-            st.error("❌ Выберите или добавьте клиента для рассрочки!")
-            return
+            if st.session_state.get("client_mode") == MODE_NEW:
+                if not new_client_ready:
+                    st.error("❌ Заполните ФИО нового клиента (и решите вопрос с похожим клиентом выше).")
+                    return
+                try:
+                    res = supabase.table("clients").insert(new_client_ready).execute()
+                    client_id = res.data[0]["id"]
+                    st.session_state["_pending_client_select"] = client_id  # даже если дальше ошибка — дубля не будет
+                except Exception as e:
+                    st.error(f"❌ Не удалось сохранить нового клиента, сделка не проведена: {e}")
+                    return
+                sel_client_name = new_client_ready["fio"]
+                client_opts = {client_id: {**new_client_ready, "id": client_id}}
+                sel_client_label = client_id
+            else:
+                st.error("❌ Выберите клиента для рассрочки!")
+                return
 
         base_group_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
         day_str = sale_date.strftime("%Y-%m-%d")
@@ -397,6 +477,7 @@ def show_sales_page():
             if pay_method == "Рассрочка":
                 saved_client = client_opts.get(sel_client_label, {"fio": sel_client_name})
                 st.session_state["last_obligation_sale_id"] = base_group_id
+                st.session_state["_pending_client_select"] = client_id
                 st.session_state["last_contract"] = {
                     "name": f"Dogovor_{contract_num_suffix[:9]}.docx",
                     "bytes": build_sale_contract(

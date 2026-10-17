@@ -90,6 +90,8 @@ def client_debts(sales, payments, today):
 
 def show_work_tab(user_role, clients, clients_map, sales, payments, today):
     st.subheader("Приём оплаты")
+    if st.session_state.get("inst_flash"):
+        st.success(st.session_state.pop("inst_flash"))
     by_client = client_debts(sales, payments, today)
 
     rows = []
@@ -277,15 +279,8 @@ def show_work_tab(user_role, clients, clients_map, sales, payments, today):
             ):
                 rebuild_schedule(sale, sale_pays, int(months))
 
-        with st.expander("🔄 Передать договор другому клиенту"):
-            other_clients = [c for c in clients if c["id"] != cid]
-            if other_clients:
-                t_opts = {c.get("fio") or "Без имени": c["id"] for c in other_clients}
-                new_fio = st.selectbox("Новый клиент (ФИО)", list(t_opts.keys()), key="transfer_client_pick")
-                if st.button("Передать этот договор", type="secondary"):
-                    transfer_sale_to_client(sale.get("id"), t_opts[new_fio])
-            else:
-                st.info("Других клиентов нет.")
+        from installment_admin import show_transfer
+        show_transfer(sale, client, clients, key_prefix="cl")
 
     with st.expander(f"📋 Все должники ({len(rows)})"):
         st.dataframe(pd.DataFrame([{
@@ -374,20 +369,6 @@ def shift_remaining(unpaid, pay_day):
     st.rerun()
 
 
-def transfer_sale_to_client(sale_id, new_client_id):
-    """Передаёт договор другому клиенту: меняет только client_id, оплаты не трогает."""
-    try:
-        supabase.table("sales").update({"client_id": new_client_id}).eq("id", sale_id).execute()
-        supabase.table("credit_payments").update({"client_id": new_client_id}).eq("sale_id", sale_id).execute()
-        st.success("Договор передан новому клиенту. Оплаченные суммы и история не изменены.")
-        st.session_state.pop("credit_client_pick", None)
-        st.session_state.pop("credit_sale_pick", None)
-        st.session_state.pop("credit_pay_pick", None)
-        st.rerun()
-    except Exception as e:
-        st.error(f"Ошибка передачи договора: {e}")
-
-
 def save_single_payment(sale, sale_pays, row_id, new_due, new_amount):
     """Правка одного неоплаченного платежа: проверка админа и журнал — через installment_admin."""
     from installment_logic import plan_single_row_edit
@@ -464,26 +445,31 @@ def show_base_tab(clients):
     with col2:
         st.subheader("Изменить клиента")
         if clients:
-            opts = {c["fio"]: c for c in clients}
-            name = st.selectbox("Клиент", list(opts.keys()))
-            person = opts[name]
-            with st.form("client_edit_form"):
-                new_fio = st.text_input("ФИО", value=str(person.get("fio") or ""))
-                new_phone = st.text_input("Телефон", value=str(person.get("phone") or ""))
-                new_address = st.text_input("Адрес", value=str(person.get("address") or ""))
-                new_passport = st.text_area("Паспорт", value=str(person.get("passport") or ""))
-                from obligation import doc_fields_input
-                extra = doc_fields_input(person, prefix=f"edit_{person.get('id')}")
-                if st.form_submit_button("Сохранить"):
-                    supabase.table("clients").update({
-                        "fio": new_fio.strip(),
-                        "phone": new_phone.strip() or None,
-                        "address": new_address.strip() or None,
-                        "passport": new_passport.strip() or None,
-                        **extra,
-                    }).eq("id", person["id"]).execute()
-                    st.success("Сохранено")
-                    st.rerun()
+            from client_logic import client_label
+            opts = {c["id"]: c for c in clients}
+            pick = st.selectbox("Клиент", list(opts.keys()), index=None, format_func=lambda i: client_label(opts[i]),
+                                placeholder="Начните вводить ФИО...", key="client_edit_pick")
+            if pick is None:
+                st.info("Выберите клиента для изменения.")
+            else:
+                person = opts[pick]
+                with st.form("client_edit_form"):
+                    new_fio = st.text_input("ФИО", value=str(person.get("fio") or ""))
+                    new_phone = st.text_input("Телефон", value=str(person.get("phone") or ""))
+                    new_address = st.text_input("Адрес", value=str(person.get("address") or ""))
+                    new_passport = st.text_area("Паспорт", value=str(person.get("passport") or ""))
+                    from obligation import doc_fields_input
+                    extra = doc_fields_input(person, prefix=f"edit_{person.get('id')}")
+                    if st.form_submit_button("Сохранить"):
+                        supabase.table("clients").update({
+                            "fio": new_fio.strip(),
+                            "phone": new_phone.strip() or None,
+                            "address": new_address.strip() or None,
+                            "passport": new_passport.strip() or None,
+                            **extra,
+                        }).eq("id", person["id"]).execute()
+                        st.success("Сохранено")
+                        st.rerun()
     if clients:
         df = pd.DataFrame(clients).drop(columns=["created_at"], errors="ignore")
         st.dataframe(df, width="stretch", hide_index=True)
