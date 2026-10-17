@@ -168,7 +168,7 @@ def show_reports_page():
                 data=buffer,
                 file_name=f"Polnyy_otchet_{p_start}_{p_end}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
+                width="stretch"
             )
 
         # =====================================================================
@@ -230,7 +230,7 @@ def show_reports_page():
                 else:
                     df_show = df_cred.copy()
 
-                st.dataframe(df_show, use_container_width=True, hide_index=True)
+                st.dataframe(df_show, width="stretch", hide_index=True)
 
                 total_debt = int(df_show["Остаток долга"].sum()) if not df_show.empty else 0
                 total_clients = df_show["Клиент"].nunique() if not df_show.empty else 0
@@ -250,7 +250,7 @@ def show_reports_page():
                         })
                         .sort_values("Остаток долга", ascending=False)
                     )
-                    st.dataframe(by_fio, use_container_width=True, hide_index=True)
+                    st.dataframe(by_fio, width="stretch", hide_index=True)
 
                 buffer2 = io.BytesIO()
                 with pd.ExcelWriter(buffer2, engine="openpyxl") as writer:
@@ -263,7 +263,7 @@ def show_reports_page():
                     data=buffer2,
                     file_name=f"Rassrochka_po_klientam_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
+                    width="stretch"
                 )
 
     # =========================================================================
@@ -408,7 +408,7 @@ def show_reports_page():
                 display = report_df.copy()
                 for col in display.columns[1:]:
                     display[col] = display[col].map("{:,.0f}".format)
-                st.dataframe(display, use_container_width=True, hide_index=True)
+                st.dataframe(display, width="stretch", hide_index=True)
 
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -418,7 +418,7 @@ def show_reports_page():
                     "📥 Скачать отчет по дням",
                     data=buffer,
                     file_name=f"Otchet_po_dnyam_{start_date}_{end_date}.xlsx",
-                    use_container_width=True
+                    width="stretch"
                 )
 
         st.markdown("---")
@@ -489,7 +489,7 @@ def show_reports_page():
                 columns=["sale_id", "raw_payment", "down_payment", "pure_name", "batch_date", "qty_raw"],
                 errors="ignore"
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
 
@@ -626,7 +626,7 @@ def show_reports_page():
                 if restore_preview:
                     st.dataframe(
                         pd.DataFrame(restore_preview).drop(columns=["product_id"], errors="ignore"),
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True
                     )
                     st.success(f"Будет возвращено на склад: **{total_restore_qty} шт.** товаров")

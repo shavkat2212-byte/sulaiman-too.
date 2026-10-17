@@ -57,7 +57,7 @@ st.sidebar.markdown(f"### 👤 {current_user['username']}")
 st.sidebar.info(f"Текущий режим: **{user_role}**")
 
 if user_role == "Администратор":
-    if st.sidebar.button("🚪 Выйти в режим Кассира", use_container_width=True):
+    if st.sidebar.button("🚪 Выйти в режим Кассира", width="stretch"):
         st.session_state.user = None
         st.rerun()
 else:
@@ -65,7 +65,7 @@ else:
     with st.sidebar.expander("🔐 Войти как Администратор"):
         with st.form("admin_password_only_form"):
             input_pass = st.text_input("Введите пароль администратора", type="password")
-            if st.form_submit_button("Подтвердить вход", use_container_width=True):
+            if st.form_submit_button("Подтвердить вход", width="stretch"):
                 if input_pass:
                     hashed = hash_password(input_pass)
                     res = supabase.table("users").select("*").eq("role", "Администратор").eq("password_hash", hashed).execute()
@@ -100,7 +100,7 @@ if choice == "👥 Клиенты" and st.session_state.get("_last_menu") != "�
         st.session_state.pop(k, None)
 st.session_state["_last_menu"] = choice
 
-if st.sidebar.button("🔄 Обновить данные", use_container_width=True):
+if st.sidebar.button("🔄 Обновить данные", width="stretch"):
     clear_data_cache()
     st.rerun()
 

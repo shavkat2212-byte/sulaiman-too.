@@ -70,7 +70,7 @@ def show_stock_page():
                     df = pd.read_csv(uploaded, sep=None, engine="python", encoding="cp1251")
 
             st.write("**Предпросмотр файла:**")
-            st.dataframe(df.head(15), use_container_width=True)
+            st.dataframe(df.head(15), width="stretch")
 
             cols = [str(c).strip().lower() for c in df.columns]
 
@@ -127,7 +127,7 @@ def show_stock_page():
 
             if parsed:
                 st.success(f"Готово к загрузке: **{len(parsed)}** товаров")
-                st.dataframe(pd.DataFrame(parsed), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(parsed), width="stretch", hide_index=True)
             else:
                 st.error("Не удалось прочитать ни одного товара")
 
@@ -136,7 +136,7 @@ def show_stock_page():
                     for e in errors:
                         st.write(e)
 
-            if parsed and st.button("🚀 Загрузить товары на склад", type="primary", use_container_width=True):
+            if parsed and st.button("🚀 Загрузить товары на склад", type="primary", width="stretch"):
                 today = datetime.now().strftime("%Y-%m-%d")
                 existing_res = supabase.table("products").select("id", "name").eq("date", today).execute()
                 existing_map = {row["name"]: row["id"] for row in (existing_res.data or [])}
@@ -228,8 +228,8 @@ def show_stock_page():
                 new_date = st.date_input("Дата поступления (партия)", value=current_date)
 
                 col_save, col_del = st.columns(2)
-                save_btn = col_save.form_submit_button("💾 Сохранить", use_container_width=True)
-                del_btn = col_del.form_submit_button("🗑️ Удалить партию", use_container_width=True)
+                save_btn = col_save.form_submit_button("💾 Сохранить", width="stretch")
+                del_btn = col_del.form_submit_button("🗑️ Удалить партию", width="stretch")
 
                 if save_btn:
                     if new_name.strip():
@@ -258,7 +258,7 @@ def show_stock_page():
     if not df_stock.empty:
         st.dataframe(
             df_stock.drop(columns=["id"], errors="ignore"),
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
     else:

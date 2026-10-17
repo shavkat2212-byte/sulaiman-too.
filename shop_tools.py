@@ -105,12 +105,12 @@ def show_archive_page():
     if sold_df.empty:
         left.info("За период продаж нет.")
     else:
-        left.dataframe(sold_df, use_container_width=True, hide_index=True)
+        left.dataframe(sold_df, width="stretch", hide_index=True)
     right.subheader("Продано и обратно не закуплено")
     if missing_df.empty:
         right.info("Всё проданное после этого закупали снова, либо продаж нет.")
     else:
-        right.dataframe(missing_df, use_container_width=True, hide_index=True)
+        right.dataframe(missing_df, width="stretch", hide_index=True)
 
     st.markdown("---")
     st.subheader("Скачать всё")
@@ -173,5 +173,5 @@ def show_archive_page():
         data=buffer.getvalue(),
         file_name=f"Sulaiman_vse_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
+        width="stretch",
     )

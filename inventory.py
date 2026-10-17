@@ -83,7 +83,7 @@ def show_inventory_page():
     st.caption(f"Всего {total_qty} шт. на {total_cost:,.0f} сом по закупке")
 
     b1, b2 = st.columns(2)
-    if b1.button("Снять все галочки", use_container_width=True):
+    if b1.button("Снять все галочки", width="stretch"):
         try:
             for row in rows:
                 st.session_state.inv_marks[str(row["id"])] = False
@@ -91,7 +91,7 @@ def show_inventory_page():
             st.rerun()
         except Exception as e:
             st.error(f"Не сохранилось: {e}")
-    if b2.button("Новая сверка", use_container_width=True):
+    if b2.button("Новая сверка", width="stretch"):
         try:
             for row in rows:
                 st.session_state.inv_marks[str(row["id"])] = False
@@ -145,5 +145,5 @@ def show_inventory_page():
         data=buffer.getvalue(),
         file_name=f"Inventarizaciya_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
+        width="stretch",
     )
