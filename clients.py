@@ -446,6 +446,8 @@ def show_base_tab(clients):
             phone = st.text_input("Телефон").strip()
             address = st.text_input("Адрес").strip()
             passport = st.text_area("Паспорт").strip()
+            from obligation import doc_fields_input
+            extra = doc_fields_input(prefix="reg")
             if st.form_submit_button("Зарегистрировать"):
                 if fio:
                     supabase.table("clients").insert({
@@ -453,6 +455,7 @@ def show_base_tab(clients):
                         "phone": phone or None,
                         "address": address or None,
                         "passport": passport or None,
+                        **extra,
                     }).execute()
                     st.success("Клиент добавлен")
                     st.rerun()
@@ -467,12 +470,15 @@ def show_base_tab(clients):
                 new_phone = st.text_input("Телефон", value=str(person.get("phone") or ""))
                 new_address = st.text_input("Адрес", value=str(person.get("address") or ""))
                 new_passport = st.text_area("Паспорт", value=str(person.get("passport") or ""))
+                from obligation import doc_fields_input
+                extra = doc_fields_input(person, prefix=f"edit_{person.get('id')}")
                 if st.form_submit_button("Сохранить"):
                     supabase.table("clients").update({
                         "fio": new_fio.strip(),
                         "phone": new_phone.strip() or None,
                         "address": new_address.strip() or None,
                         "passport": new_passport.strip() or None,
+                        **extra,
                     }).eq("id", person["id"]).execute()
                     st.success("Сохранено")
                     st.rerun()

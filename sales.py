@@ -70,6 +70,14 @@ def show_sales_page():
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             key="last_contract_download",
         )
+    if st.session_state.get("last_obligation_sale_id"):
+        with st.container(border=True):
+            st.subheader("📄 Бланк обязательства по последней рассрочке")
+            from obligation import show_obligation
+            show_obligation(st.session_state["last_obligation_sale_id"], key="obl_new")
+            if st.button("✖️ Скрыть бланк", key="obl_hide"):
+                st.session_state.pop("last_obligation_sale_id", None)
+                st.rerun()
 
     if "cart" not in st.session_state:
         st.session_state.cart = []
@@ -388,6 +396,7 @@ def show_sales_page():
 
             if pay_method == "Рассрочка":
                 saved_client = client_opts.get(sel_client_label, {"fio": sel_client_name})
+                st.session_state["last_obligation_sale_id"] = base_group_id
                 st.session_state["last_contract"] = {
                     "name": f"Dogovor_{contract_num_suffix[:9]}.docx",
                     "bytes": build_sale_contract(
