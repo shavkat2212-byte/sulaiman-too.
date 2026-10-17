@@ -214,6 +214,9 @@ def show_installment_admin_page():
     client = clients_map[cid]
     sid = sale["id"]
 
+    from obligation import obligation_button
+    obligation_button(sid, key="obl_admin")
+
     with st.expander("🔄 Передать договор другому клиенту (исправить ФИО)"):
         other = [c for c in clients if c["id"] != cid]
         if other:
