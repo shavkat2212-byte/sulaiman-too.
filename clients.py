@@ -429,8 +429,10 @@ def show_base_tab(clients):
             phone = st.text_input("Телефон").strip()
             address = st.text_input("Адрес").strip()
             passport = st.text_area("Паспорт").strip()
-            from obligation import doc_fields_input
+            from obligation import doc_fields_input, client_comment_available
             extra = doc_fields_input(prefix="reg")
+            if client_comment_available():
+                extra["comment"] = st.text_area("Комментарий").strip() or None
             if st.form_submit_button("Зарегистрировать"):
                 if fio:
                     supabase.table("clients").insert({
@@ -460,6 +462,9 @@ def show_base_tab(clients):
                     new_passport = st.text_area("Паспорт", value=str(person.get("passport") or ""))
                     from obligation import doc_fields_input
                     extra = doc_fields_input(person, prefix=f"edit_{person.get('id')}")
+                    from obligation import client_comment_available
+                    if client_comment_available():
+                        extra["comment"] = st.text_area("Комментарий", value=str(person.get("comment") or "")).strip() or None
                     if st.form_submit_button("Сохранить"):
                         supabase.table("clients").update({
                             "fio": new_fio.strip(),
