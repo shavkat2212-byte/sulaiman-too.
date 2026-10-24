@@ -13,7 +13,8 @@ from client_logic import client_label, find_duplicates, new_client_payload
 
 MODE_EXISTING = "Выбрать существующего"
 MODE_NEW = "Добавить нового"
-NEW_CLIENT_KEYS = ("nc_fio", "nc_phone", "nc_address", "nc_passport", "nc_force_new")
+NEW_CLIENT_KEYS = ("nc_fio", "nc_phone", "nc_address", "nc_passport", "nc_force_new",
+                   "nc_pin", "nc_issued", "nc_pdate", "nc_comment")
 
 
 def apply_pending_client():
@@ -30,8 +31,17 @@ def use_existing_client(cid):
     st.session_state["_pending_client_select"] = cid
 
 
+def new_client_from_state():
+    """Все поля формы «Добавить нового» (как во вкладке Клиенты) + обязательный комментарий."""
+    from obligation import doc_fields_from_state, client_comment_available
+    ss = st.session_state
+    return new_client_payload(ss.get("nc_fio"), ss.get("nc_phone"), ss.get("nc_address"), ss.get("nc_passport"),
+                              comment=ss.get("nc_comment"), extra=doc_fields_from_state("nc"),
+                              comment_required=client_comment_available())
+
+
 def save_new_client_cb(clients_all):
-    payload, errors, _ = new_client_payload(*(st.session_state.get(k) for k in NEW_CLIENT_KEYS[:4]))
+    payload, errors, _ = new_client_from_state()
     if errors:
         st.session_state["_nc_error"] = "; ".join(errors)
         return
@@ -257,12 +267,20 @@ def show_sales_page():
                 st.text_input("Телефон", key="nc_phone", placeholder="0555 12-34-56")
                 st.text_input("Адрес", key="nc_address")
                 st.text_area("Паспортные данные", key="nc_passport")
-                payload, nc_errors, nc_warnings = new_client_payload(
-                    st.session_state.get("nc_fio"), st.session_state.get("nc_phone"),
-                    st.session_state.get("nc_address"), st.session_state.get("nc_passport"))
+                from obligation import doc_fields_input, client_comment_available
+                doc_fields_input(prefix="nc")  # ПИН / кем выдан / дата выдачи — как во вкладке Клиенты
+                if client_comment_available():
+                    st.text_area("Комментарий *", key="nc_comment",
+                                 placeholder="Например: место работы, поручитель, откуда узнал о магазине")
+                else:
+                    st.caption("ℹ️ Чтобы сохранять «Комментарий» клиента, выполните в Supabase "
+                               "migrations/004_client_comment.sql")
+                payload, nc_errors, nc_warnings = new_client_from_state()
                 for w in nc_warnings:
                     if st.session_state.get("nc_fio"):
                         st.caption(f"⚠️ {w}")
+                if st.session_state.get("nc_fio") and "Заполните «Комментарий»" in nc_errors:
+                    st.caption("⚠️ Заполните «Комментарий» — без него клиент не сохранится")
                 dups = find_duplicates(clients_all, payload["fio"], payload["phone"]) if payload["fio"] or payload["phone"] else []
                 if dups:
                     st.warning("Похожий клиент уже есть в базе (тот же телефон или ФИО):")
@@ -369,7 +387,7 @@ def show_sales_page():
         if pay_method == "Рассрочка" and not client_id:
             if st.session_state.get("client_mode") == MODE_NEW:
                 if not new_client_ready:
-                    st.error("❌ Заполните ФИО нового клиента (и решите вопрос с похожим клиентом выше).")
+                    st.error("❌ Заполните ФИО и «Комментарий» нового клиента (и решите вопрос с похожим клиентом выше).")
                     return
                 try:
                     res = supabase.table("clients").insert(new_client_ready).execute()

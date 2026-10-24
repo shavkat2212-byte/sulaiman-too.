@@ -28,10 +28,14 @@ def find_duplicates(clients, fio, phone):
     return out
 
 
-def new_client_payload(fio, phone, address, passport):
-    """Проверяет поля нового клиента. Возвращает (payload, errors, warnings)."""
+def new_client_payload(fio, phone, address, passport, comment=None, extra=None, comment_required=False):
+    """Проверяет поля нового клиента. Возвращает (payload, errors, warnings).
+
+    extra — ПИН / кем выдан / дата выдачи (если колонки есть в базе).
+    comment_required — «Комментарий» обязателен (колонка comment есть в базе)."""
     fio = " ".join(str(fio or "").split())
     phone, address, passport = (str(x or "").strip() for x in (phone, address, passport))
+    comment = str(comment or "").strip()
     errors, warnings = [], []
     if len(fio) < 3:
         errors.append("Укажите ФИО клиента")
@@ -41,7 +45,15 @@ def new_client_payload(fio, phone, address, passport):
         warnings.append("Телефон не указан — лучше указать, чтобы связаться с клиентом")
     elif len(re.sub(r"\D", "", phone)) < 9:
         warnings.append("Телефон выглядит неполным")
+    pin = str((extra or {}).get("pin") or "").strip()
+    if pin and len(re.sub(r"\D", "", pin)) != 14:
+        warnings.append("ПИН обычно состоит из 14 цифр")
+    if comment_required and not comment:
+        errors.append("Заполните «Комментарий»")
     payload = {"fio": fio, "phone": phone or None, "address": address or None, "passport": passport or None}
+    payload.update({k: v for k, v in (extra or {}).items()})
+    if comment_required or comment:
+        payload["comment"] = comment or None
     return payload, errors, warnings
 
 

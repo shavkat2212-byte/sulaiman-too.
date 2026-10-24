@@ -534,6 +534,32 @@ def client_doc_columns_available():
     return st.session_state["client_doc_cols"]
 
 
+def client_comment_available():
+    """Есть ли в clients колонка comment (migrations/004_client_comment.sql)."""
+    import streamlit as st
+    if "client_comment_col" not in st.session_state:
+        try:
+            from database import supabase
+            supabase.table("clients").select("comment").limit(1).execute()
+            st.session_state["client_comment_col"] = True
+        except Exception:
+            st.session_state["client_comment_col"] = False
+    return st.session_state["client_comment_col"]
+
+
+def doc_fields_from_state(prefix):
+    """Те же значения, что вернул doc_fields_input, но из session_state (для on_click-колбэков)."""
+    import streamlit as st
+    if not client_doc_columns_available():
+        return {}
+    pin = str(st.session_state.get(f"{prefix}_pin") or "").strip()
+    issued = str(st.session_state.get(f"{prefix}_issued") or "").strip()
+    ptxt = str(st.session_state.get(f"{prefix}_pdate") or "").strip()
+    pdate = _day(ptxt) if ptxt else None
+    return {"pin": pin or None, "passport_issued_by": issued or None,
+            "passport_date": pdate.strftime("%Y-%m-%d") if pdate else None}
+
+
 def doc_fields_input(person=None, prefix="new"):
     """Поля ПИН / кем выдан / дата выдачи в форме клиента — только если миграция выполнена."""
     import streamlit as st

@@ -28,6 +28,21 @@ def test_payload_validation():
     assert any("неполным" in w for w in new_client_payload("Иванов Иван", "0555", "", "")[2])
 
 
+def test_payload_full_fields_and_comment():
+    extra = {"pin": "12345678901234", "passport_issued_by": "МКК 211", "passport_date": "2020-03-15"}
+    p, err, warn = new_client_payload("Иванов Иван", "0555 12 34 56", "", "AN123", comment=" поручитель брат ",
+                                      extra=extra, comment_required=True)
+    assert not err and p["pin"] == "12345678901234" and p["passport_date"] == "2020-03-15"
+    assert p["comment"] == "поручитель брат"
+    p, err, _ = new_client_payload("Иванов Иван", "0555123456", "", "", comment="  ", comment_required=True)
+    assert "Заполните «Комментарий»" in err
+    # колонки comment ещё нет — комментарий не обязателен и не уходит в базу
+    p, err, _ = new_client_payload("Иванов Иван", "0555123456", "", "", comment="", comment_required=False)
+    assert not err and "comment" not in p
+    assert any("14 цифр" in w for w in new_client_payload("Иванов Иван", "0555123456", "", "",
+                                                          extra={"pin": "123"})[2])
+
+
 def test_rename_contract():
     n = "Договор рассрочки №1710 [Телефон (1 шт.)] — Абдижапаров Фирдавсий Илхамжанович"
     assert rename_contract(n, "Абдижапаров Фирдавсий Илхамжанович", "Иванов Иван").endswith("— Иванов Иван")
