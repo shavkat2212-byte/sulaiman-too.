@@ -76,3 +76,41 @@ def get_rows(table_name: str, ttl: int = 40):
     rows = supabase.table(table_name).select("*").execute().data or []
     cache[table_name] = {"ts": now, "rows": rows}
     return rows
+
+
+# --- «Запомнить меня»: токен в ссылке (?s=...), в базе только хэш (таблица user_sessions, миграция 005) ---
+def create_session_token(user_id, days: int = 180):
+    from datetime import datetime, timedelta, timezone
+    from supplier_logic import new_token, hash_token
+    token = new_token()
+    try:
+        supabase.table("user_sessions").insert({
+            "user_id": user_id, "token_hash": hash_token(token),
+            "expires_at": (datetime.now(timezone.utc) + timedelta(days=days)).isoformat(),
+        }).execute()
+        return token
+    except Exception:
+        return None
+
+
+def user_from_session_token(token: str):
+    from datetime import datetime, timezone
+    from supplier_logic import hash_token
+    try:
+        res = (supabase.table("user_sessions").select("user_id, expires_at")
+               .eq("token_hash", hash_token(token))
+               .gt("expires_at", datetime.now(timezone.utc).isoformat()).execute())
+        if not res.data:
+            return None
+        u = supabase.table("users").select("id, username, role").eq("id", res.data[0]["user_id"]).execute()
+        return u.data[0] if u.data else None
+    except Exception:
+        return None
+
+
+def delete_session_token(token: str):
+    from supplier_logic import hash_token
+    try:
+        supabase.table("user_sessions").delete().eq("token_hash", hash_token(token)).execute()
+    except Exception:
+        pass

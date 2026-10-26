@@ -5,6 +5,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from database import supabase
+from stock_logic import is_admin, allowed_product_update, can_delete_product, can_add_products
 
 def db_get_stock():
     response = supabase.table("products").select("*").gt("qty", 0).execute()
@@ -55,8 +56,13 @@ def show_stock_page():
     # =====================================================================
     # ЗАГРУЗКА ИЗ EXCEL
     # =====================================================================
-    st.subheader("📥 Загрузка/Обновление товаров из Excel (.xlsx или .csv)")
-    uploaded = st.file_uploader("Выберите файл таблицы", type=["csv", "xlsx"])
+    admin = is_admin(user_role)
+    uploaded = None
+    if admin:
+        st.subheader("📥 Загрузка/Обновление товаров из Excel (.xlsx или .csv)")
+        uploaded = st.file_uploader("Выберите файл таблицы", type=["csv", "xlsx"])
+    else:
+        st.info("🔒 Кассир может менять только название товара. Цены, количество, добавление и удаление — у Администратора.")
 
     if uploaded is not None:
         try:
@@ -136,7 +142,7 @@ def show_stock_page():
                     for e in errors:
                         st.write(e)
 
-            if parsed and st.button("🚀 Загрузить товары на склад", type="primary", width="stretch"):
+            if parsed and can_add_products(user_role) and st.button("🚀 Загрузить товары на склад", type="primary", width="stretch"):
                 today = datetime.now().strftime("%Y-%m-%d")
                 existing_res = supabase.table("products").select("id", "name").eq("date", today).execute()
                 existing_map = {row["name"]: row["id"] for row in (existing_res.data or [])}
@@ -177,6 +183,7 @@ def show_stock_page():
     col_add, col_edit = st.columns(2)
 
     with col_add:
+      if admin:
         st.subheader("➕ Добавить товар вручную")
         with st.form("add_form", clear_on_submit=True):
             name = st.text_input("Название товара").strip().lower()
@@ -184,7 +191,7 @@ def show_stock_page():
             cost = st.number_input("Закупка (сом)", min_value=0.0, step=10.0)
             price = st.number_input("Цена продажи, сом", min_value=0.0, step=10.0)
             if st.form_submit_button("Сохранить в облако"):
-                if name:
+                if name and can_add_products(user_role):
                     today = datetime.now().strftime("%Y-%m-%d")
                     existing = supabase.table("products").select("*").eq("name", name).eq("date", today).execute()
                     if existing.data:
@@ -222,31 +229,34 @@ def show_stock_page():
 
             with st.form("edit_form"):
                 new_name = st.text_input("Название товара", value=str(item_data["name"]).capitalize())
-                new_qty = st.number_input("Остаток (шт)", min_value=0, value=int(item_data["qty"]))
-                new_cost = st.number_input("Цена закупки", min_value=0.0, value=float(item_data["cost"]))
-                new_price = st.number_input("Цена продажи", min_value=0.0, value=float(item_data["price"]))
-                new_date = st.date_input("Дата поступления (партия)", value=current_date)
-
-                col_save, col_del = st.columns(2)
-                save_btn = col_save.form_submit_button("💾 Сохранить", width="stretch")
-                del_btn = col_del.form_submit_button("🗑️ Удалить партию", width="stretch")
+                if admin:
+                    new_qty = st.number_input("Остаток (шт)", min_value=0, value=int(item_data["qty"]))
+                    new_cost = st.number_input("Цена закупки", min_value=0.0, value=float(item_data["cost"]))
+                    new_price = st.number_input("Цена продажи", min_value=0.0, value=float(item_data["price"]))
+                    new_date = st.date_input("Дата поступления (партия)", value=current_date)
+                    col_save, col_del = st.columns(2)
+                    save_btn = col_save.form_submit_button("💾 Сохранить", width="stretch")
+                    del_btn = col_del.form_submit_button("🗑️ Удалить партию", width="stretch")
+                else:
+                    st.caption(f"Остаток: {int(item_data['qty'])} шт · Продажа: {float(item_data['price']):,.2f} сом")
+                    save_btn = st.form_submit_button("💾 Сохранить название", width="stretch")
+                    del_btn = False
 
                 if save_btn:
                     if new_name.strip():
-                        supabase.table("products").update({
-                            "name": new_name.strip().lower(),
-                            "qty": new_qty,
-                            "cost": new_cost,
-                            "price": new_price,
-                            "date": new_date.strftime("%Y-%m-%d")
-                        }).eq("id", batch_id).execute()
+                        data = {"name": new_name.strip().lower()}
+                        if admin:
+                            data.update({"qty": new_qty, "cost": new_cost, "price": new_price,
+                                         "date": new_date.strftime("%Y-%m-%d")})
+                        # Проверка на сервере: кассиру пропускаем только название
+                        supabase.table("products").update(allowed_product_update(user_role, data)).eq("id", batch_id).execute()
                         st.success("Изменения сохранены!")
                         st.rerun()
                     else:
                         st.error("Название не может быть пустым")
 
                 if del_btn:
-                    if user_role == "Администратор":
+                    if can_delete_product(user_role):
                         supabase.table("products").delete().eq("id", batch_id).execute()
                         st.success("Партия удалена!")
                         st.rerun()
