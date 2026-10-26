@@ -5,7 +5,8 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from database import supabase
-from stock_logic import is_admin, allowed_product_update, can_delete_product, can_add_products
+from stock_logic import (is_admin, allowed_product_update, can_delete_product, can_add_products,
+                         parse_stock_grid, grid_total)
 
 def db_get_stock():
     response = supabase.table("products").select("*").gt("qty", 0).execute()
@@ -176,6 +177,52 @@ def show_stock_page():
             st.error(f"Ошибка чтения файла: {e}")
 
     st.markdown("---")
+
+    # =====================================================================
+    # СПИСОК КАК В EXCEL (только Администратор)
+    # =====================================================================
+    if admin:
+        st.subheader("📋 Список как в Excel")
+        st.caption("Заполните строки: товар, количество, себестоимость, цена продажи. Пустые строки не учитываются.")
+        empty = pd.DataFrame({"Товар": [""] * 5, "Кол-во": [None] * 5, "Себес": [None] * 5, "Прод": [None] * 5})
+        grid = st.data_editor(
+            empty, num_rows="dynamic", width="stretch", hide_index=True, key="stock_grid",
+            column_config={
+                "Товар": st.column_config.TextColumn("Товар", required=False),
+                "Кол-во": st.column_config.NumberColumn("Кол-во", min_value=0, step=1, format="%d"),
+                "Себес": st.column_config.NumberColumn("Себес, сом", min_value=0.0, step=10.0),
+                "Прод": st.column_config.NumberColumn("Прод, сом", min_value=0.0, step=10.0),
+            },
+        )
+        grid_items, grid_errors = parse_stock_grid(grid.to_dict("records"))
+        if grid_items:
+            preview = pd.DataFrame([{**i, "всего": i["qty"] * i["cost"]} for i in grid_items])
+            preview.columns = ["Товар", "Кол-во", "Себес", "Прод", "Всего (кол-во × себес)"]
+            st.dataframe(preview, width="stretch", hide_index=True)
+            st.markdown(f"**Итого по себестоимости: {grid_total(grid_items):,.0f} сом**".replace(",", " "))
+        for e in grid_errors:
+            st.error(e)
+        if st.button("💾 Сохранить на склад", type="primary", width="stretch", key="stock_grid_save",
+                     disabled=not grid_items or bool(grid_errors)):
+            if can_add_products(user_role):
+                today = datetime.now().strftime("%Y-%m-%d")
+                existing_res = supabase.table("products").select("id", "name").eq("date", today).execute()
+                existing_map = {row["name"]: row["id"] for row in (existing_res.data or [])}
+                insert_list, updated = [], 0
+                for item in grid_items:
+                    if item["name"] in existing_map:
+                        supabase.table("products").update({
+                            "qty": item["qty"], "cost": item["cost"], "price": item["price"]
+                        }).eq("id", existing_map[item["name"]]).execute()
+                        updated += 1
+                    else:
+                        insert_list.append({**item, "date": today})
+                if insert_list:
+                    supabase.table("products").insert(insert_list).execute()
+                st.success(f"✅ Добавлено: {len(insert_list)}, обновлено: {updated}")
+                st.session_state.pop("stock_grid", None)
+                st.rerun()
+        st.markdown("---")
 
     # =====================================================================
     # РУЧНОЕ ДОБАВЛЕНИЕ

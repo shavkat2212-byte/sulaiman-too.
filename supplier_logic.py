@@ -71,3 +71,78 @@ def new_token() -> str:
 
 def hash_token(token: str) -> str:
     return hashlib.sha256(("sulaiman-session:" + token).encode("utf-8")).hexdigest()
+
+
+# --- Строки товаров (для поставок, возвратов и заказов) ---
+def parse_lines(rows):
+    """Строки таблицы → список {name, qty, unit_price, line_total}. Пустые пропускаются."""
+    out = []
+    for r in rows or []:
+        name = str(r.get("Товар") or "").strip()
+        if name.lower() in ("", "nan", "none"):
+            continue
+        def num(v):
+            try:
+                if v is None or (isinstance(v, float) and v != v):
+                    return None
+                return float(str(v).replace(" ", "").replace(",", "."))
+            except (TypeError, ValueError):
+                return None
+        qty = num(r.get("Кол-во"))
+        price = num(r.get("Цена"))
+        line = {"name": name, "qty": qty if qty and qty > 0 else None,
+                "unit_price": price if price and price >= 0 else None,
+                "note": (str(r.get("Примечание") or "").strip() or None) if r.get("Примечание") not in (None,) else None}
+        if line["note"] in ("nan", "None"):
+            line["note"] = None
+        line["line_total"] = round(line["qty"] * line["unit_price"], 2) if line["qty"] and line["unit_price"] else None
+        out.append(line)
+    return out
+
+
+def lines_sum(lines) -> float:
+    return round(sum(l.get("line_total") or 0 for l in lines or []), 2)
+
+
+# --- Заказы поставщику ---
+ORDER_SENT, ORDER_CONFIRMED, ORDER_ACCEPTED, ORDER_CANCELLED = "отправлен", "подтверждён", "принят", "отменён"
+ORDER_STATUSES = (ORDER_SENT, ORDER_CONFIRMED, ORDER_ACCEPTED, ORDER_CANCELLED)
+
+
+def can_create_order(side) -> bool:
+    return side == SHOP
+
+
+def can_confirm_order(order: dict, side) -> bool:
+    """Поставщик подтверждает отправленный заказ (или меняет сумму уже подтверждённого)."""
+    return side == SUPPLIER and order.get("status") in (ORDER_SENT, ORDER_CONFIRMED)
+
+
+def can_accept_order(order: dict, side) -> bool:
+    """Магазин принимает подтверждённый заказ с суммой > 0."""
+    return (side == SHOP and order.get("status") == ORDER_CONFIRMED
+            and validate_amount(order.get("confirmed_amount")))
+
+
+def can_cancel_order(order: dict, side) -> bool:
+    return side in (SHOP, SUPPLIER) and order.get("status") in (ORDER_SENT, ORDER_CONFIRMED)
+
+
+def next_status(order: dict, action: str, side) -> str:
+    """action: confirm | accept | cancel. Бросает ValueError, если переход запрещён."""
+    checks = {"confirm": (can_confirm_order, ORDER_CONFIRMED),
+              "accept": (can_accept_order, ORDER_ACCEPTED),
+              "cancel": (can_cancel_order, ORDER_CANCELLED)}
+    if action not in checks:
+        raise ValueError(f"Неизвестное действие: {action}")
+    fn, new = checks[action]
+    if not fn(order, side):
+        raise ValueError(f"Нельзя: {action} при статусе «{order.get('status')}» для стороны «{side}»")
+    return new
+
+
+def ledger_from_order(order: dict) -> dict:
+    """Запись долга, которая создаётся при приёмке заказа (сразу принята)."""
+    return {"type": TYPE_GOODS, "amount": float(order["confirmed_amount"]), "accepted": True,
+            "order_id": order.get("id"),
+            "comment": f"Заказ №{order.get('id')}" + (f" · {order['comment']}" if order.get("comment") else "")}
