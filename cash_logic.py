@@ -5,10 +5,12 @@
 PREFIX_NEEDS = "[НУЖДЫ]"
 PREFIX_SUPPLIER = "[ПОСТАВЩИК]"
 PREFIX_ANNUL = "[АННУЛИРОВАНИЕ]"
+PREFIX_DEPOSIT = "[ВЗНОС]"
 
 CAT_NEEDS = "Нужды магазина"
 CAT_SUPPLIER = "Оплата контрагенту"
 CAT_ANNUL = "Аннулирование погашения"
+CAT_DEPOSIT = "Взнос в кассу"
 CAT_NONE = "Без категории"
 EXPENSE_CATS = [CAT_NEEDS, CAT_SUPPLIER, CAT_NONE]
 PREFIX_BY_CAT = {CAT_NEEDS: PREFIX_NEEDS, CAT_SUPPLIER: PREFIX_SUPPLIER}
@@ -22,12 +24,14 @@ def get_category_from_comment(comment):
         return CAT_SUPPLIER
     if comment.startswith(PREFIX_ANNUL):
         return CAT_ANNUL
+    if comment.startswith(PREFIX_DEPOSIT):
+        return CAT_DEPOSIT
     return CAT_NONE
 
 
 def clean_comment(comment):
     comment = str(comment or "").strip()
-    for prefix in (PREFIX_NEEDS, PREFIX_SUPPLIER, PREFIX_ANNUL):
+    for prefix in (PREFIX_NEEDS, PREFIX_SUPPLIER, PREFIX_ANNUL, PREFIX_DEPOSIT):
         if comment.startswith(prefix):
             return comment[len(prefix):].strip()
     return comment
@@ -58,7 +62,10 @@ def plan_cash_edit(op, new_amount_abs, new_comment, new_cat=None):
         raise ValueError("Сумма должна быть больше 0")
     text = str(new_comment or "").strip()
     if kind == "income":
-        # у прихода нет категории-префикса: сохраняем как было, только плюсом
+        # приход остаётся плюсом; у взноса сохраняем префикс [ВЗНОС]
+        if get_category_from_comment(op.get("comment")) == CAT_DEPOSIT:
+            body = clean_comment(text) if text.startswith(PREFIX_DEPOSIT) else text
+            return {"amount": amount, "comment": f"{PREFIX_DEPOSIT} {body}".strip()}
         return {"amount": amount, "comment": text}
     cat = new_cat if new_cat in EXPENSE_CATS else get_category_from_comment(op.get("comment"))
     prefix = PREFIX_BY_CAT.get(cat)
@@ -69,3 +76,14 @@ def check_cash_delete(op):
     if is_annulment(op):
         raise ValueError("Аннулирование погашения удалять нельзя: касса и график разойдутся. "
                          "Если оплату нужно вернуть — примите её заново в «👥 Клиенты».")
+
+
+def plan_cash_deposit(amount, comment, now_str):
+    """Строка для взноса в кассу: сумма > 0, комментарий обязателен (от 3 символов)."""
+    amount = float(amount or 0)
+    if amount <= 0:
+        raise ValueError("Сумма взноса должна быть больше 0")
+    text = str(comment or "").strip()
+    if len(text) < 3:
+        raise ValueError("Напишите комментарий: откуда и зачем эти деньги")
+    return {"date": now_str, "amount": amount, "comment": f"{PREFIX_DEPOSIT} {text}"}

@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Главный модуль: Авторизация и Маршрутизация
-# Версия программы: 1.18.0 (склад: список как в Excel; поставки списком товаров; заказы поставщику)
+# Версия программы: 1.18.1 (касса: взнос в кассу с комментарием)
 
 import streamlit as st
 from utils import (
@@ -80,7 +80,7 @@ if user_role == SUPPLIER_ROLE:
     # Поставщик видит только свой блок долга — ни кассы, ни склада, ни клиентов
     if st.sidebar.button("🚪 Выйти", width="stretch"):
         _logout()
-    st.sidebar.caption("Магазин «Сулайман-Тоо» v1.18.0")
+    st.sidebar.caption("Магазин «Сулайман-Тоо» v1.18.1")
     show_supplier_debt_page()
     st.stop()
 
@@ -148,7 +148,7 @@ if st.sidebar.button("🔄 Обновить данные", width="stretch"):
     st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Магазин «Сулайман-Тоо» v1.18.0")
+st.sidebar.caption("Магазин «Сулайман-Тоо» v1.18.1")
 
 if choice == "📦 Склад":
     show_stock_page()
