@@ -6,6 +6,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from database import supabase
 from cash_logic import (
+    plan_cash_deposit,
     EXPENSE_CATS, check_cash_delete, clean_comment, get_category_from_comment, op_kind, plan_cash_edit,
 )
 
@@ -267,7 +268,7 @@ def show_cash_main(user_role):
     with col_f2:
         end_date = st.date_input("Конец периода", value=datetime.now().date())
     with col_f3:
-        filter_cat = st.selectbox("Фильтр по типу", ["Все", "Нужды магазина", "Оплата контрагенту", "Аннулирование погашения", "Без категории"])
+        filter_cat = st.selectbox("Фильтр по типу", ["Все", "Нужды магазина", "Оплата контрагенту", "Аннулирование погашения", "Взнос в кассу", "Без категории"])
 
     df_ops = pd.DataFrame(ops_data) if ops_data else pd.DataFrame()
     if not df_ops.empty:
@@ -307,6 +308,25 @@ def show_cash_main(user_role):
         selected_op = next((op for op in ops_data if op["id"] == selected_id), None)
         if selected_op:
             show_cash_edit_form(selected_op)
+
+    st.markdown("---")
+    st.subheader("📥 Взнос в кассу")
+    st.caption("Например: после аннулирования ошибочной оплаты в «Правка рассрочек» вернуть сумму в кассу.")
+    with st.form("cash_deposit_form", clear_on_submit=True):
+        dep_amount = st.number_input("Сумма взноса, сом", min_value=1.0, value=1000.0, step=100.0)
+        dep_comment = st.text_input("Комментарий (обязательно)", placeholder="Например: возврат после аннулирования, клиент Иванов")
+        if st.form_submit_button("Внести в кассу", type="primary"):
+            try:
+                new_row = plan_cash_deposit(dep_amount, dep_comment, datetime.now().strftime("%Y-%m-%d %H:%M"))
+                res = supabase.table("cash_operations").insert(new_row).execute()
+                new_id = res.data[0]["id"] if res.data else None
+                write_audit("CREATE", "cash_operations", new_id, None, new_row, "Взнос в кассу")
+                st.success("Взнос внесён в кассу.")
+                st.rerun()
+            except ValueError as e:
+                st.error(str(e))
+            except Exception as e:
+                st.error(f"Ошибка: {e}")
 
     st.markdown("---")
     st.subheader("📤 Новый расход из кассы")
