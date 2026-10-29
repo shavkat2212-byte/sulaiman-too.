@@ -10,7 +10,7 @@ from supplier_logic import (
     can_cancel_order, next_status, ledger_from_order, ORDER_SENT, ORDER_CONFIRMED,
 )
 from stock_logic import is_admin
-import supplier_import as si
+from supplier_month import show_monthly_grid
 
 TYPE_LABELS = {TYPE_GOODS: "📦 Товар пришёл", TYPE_PAYMENT: "💸 Оплата", TYPE_RETURN: "↩️ Возврат"}
 
@@ -115,34 +115,6 @@ def _admin_supplier_block():
                     st.success(f"Логин «{uname.strip()}» создан. Передайте его поставщику вместе с паролем.")
 
 
-def _admin_import_block(user, entries):
-    with st.expander("📥 Импорт из Excel (начальные данные)"):
-        st.caption("Загружает историю из Excel: каждый день с ТМЗ (столбец «Итого») — как «товар», "
-                   "оплаты с пометкой «Икром» — как «оплата» (возврат — как «возврат»). "
-                   "Повторный импорт не создаёт дублей. Лишнее потом можно удалить во вкладке «История».")
-        up = st.file_uploader("Файл .xlsx", type=["xlsx"], key="sup_import_file")
-        use_seed = st.checkbox("Использовать встроенный файл (data/ikrom_ledger_seed.xlsx)", value=up is None,
-                               key="sup_import_seed")
-        src = up if up is not None and not use_seed else si.SEED_PATH
-        try:
-            parsed = si.parse_workbook(src)
-        except Exception as ex:
-            st.error(f"Не получилось прочитать файл: {ex}")
-            return
-        fresh = si.new_only(parsed, entries)
-        sm = si.summary(fresh)
-        st.write(" · ".join(f"{TYPE_LABELS[t]}: {sm[t]['count']} на {fmt(sm[t]['sum'])}" for t in sm))
-        if len(fresh) < len(parsed):
-            st.caption(f"Уже загружено раньше и будет пропущено: {len(parsed) - len(fresh)}")
-        accepted = st.checkbox("Сразу принять (входит в долг)", value=True, key="sup_import_acc")
-        if st.button("Импортировать", type="primary", disabled=not fresh, key="sup_import_go"):
-            rows = si.to_rows(fresh, accepted=accepted, user=user, now_iso=_now())
-            for i in range(0, len(rows), 50):
-                supabase.table("supplier_ledger").insert(rows[i:i + 50]).execute()
-            st.success(f"Импортировано записей: {len(rows)}")
-            st.rerun()
-
-
 def show_supplier_debt_page():
     user = st.session_state.get("user") or {}
     role = user.get("role", "Кассир")
@@ -161,7 +133,6 @@ def show_supplier_debt_page():
 
     if is_admin(role):
         _admin_supplier_block()
-        _admin_import_block(user, entries)
 
     ledger_lines = load_lines("supplier_ledger_lines", "ledger_id")
     orders = load_orders()
@@ -176,22 +147,25 @@ def show_supplier_debt_page():
                 pass
         ledger_lines, orders = {}, []
 
-    debt = balance(entries)
-    pend = pending_balance(entries)
-    if debt > 0:
-        st.metric("Магазин должен поставщику", fmt(debt))
-    elif debt < 0:
-        st.metric("Поставщик должен магазину (переплата)", fmt(-debt))
-    else:
-        st.metric("Долг сейчас", "0 сом")
-    n_pending = sum(1 for e in entries if not e.get("accepted"))
-    if n_pending:
-        st.caption(f"⏳ Ждут подтверждения: {n_pending} (на {fmt(abs(pend))}) — в долг пока не входят.")
-
     open_orders = [o for o in orders if o.get("status") in (ORDER_SENT, ORDER_CONFIRMED)]
-    tab_debt, tab_orders, tab_hist = st.tabs(
-        ["💰 Долг", f"📝 Заказы ({len(open_orders)})" if open_orders else "📝 Заказы", "📜 История"])
+    tab_grid, tab_debt, tab_orders, tab_hist = st.tabs(
+        ["📊 Таблица по месяцам", "✅ Записи с подтверждением",
+         f"📝 Заказы ({len(open_orders)})" if open_orders else "📝 Заказы", "📜 История"])
+    with tab_grid:
+        show_monthly_grid(user, can_edit=True)
     with tab_debt:
+        st.caption("Старый учёт с взаимным подтверждением (отдельно от таблицы по месяцам).")
+        debt = balance(entries)
+        pend = pending_balance(entries)
+        if debt > 0:
+            st.metric("Магазин должен поставщику", fmt(debt))
+        elif debt < 0:
+            st.metric("Поставщик должен магазину (переплата)", fmt(-debt))
+        else:
+            st.metric("Долг сейчас", "0 сом")
+        n_pending = sum(1 for e in entries if not e.get("accepted"))
+        if n_pending:
+            st.caption(f"⏳ Ждут подтверждения: {n_pending} (на {fmt(abs(pend))}) — в долг пока не входят.")
         _debt_tab(user, role, side, entries, ledger_lines, has_006)
     with tab_orders:
         if has_006:
@@ -359,14 +333,3 @@ def _history_tab(entries, ledger_lines, admin=False):
                 for e in with_lines}
         sel = st.selectbox("Посмотреть список товаров записи", list(opts.keys()), key="hist_sel")
         _show_lines(ledger_lines.get(opts[sel]))
-    imported = [e for e in entries if si.IMPORT_NAME == (e.get("created_by_name") or "")]
-    if admin and imported:
-        with st.expander(f"🗑 Удалить лишние записи из импорта Excel ({len(imported)})"):
-            opts = {f"{str(e.get('created_at', ''))[:10]} · {TYPE_LABELS.get(e['type'], e['type'])} · "
-                    f"{fmt(float(e['amount']))} · #{e['id']}": e["id"] for e in imported}
-            sel = st.multiselect("Выберите записи", list(opts.keys()), key="hist_imp_del")
-            if st.button("Удалить выбранные", disabled=not sel, key="hist_imp_del_btn"):
-                for k in sel:
-                    supabase.table("supplier_ledger").delete().eq("id", opts[k]).eq("created_by_name", si.IMPORT_NAME).execute()
-                st.success(f"Удалено: {len(sel)}")
-                st.rerun()
