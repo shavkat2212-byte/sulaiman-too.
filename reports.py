@@ -28,19 +28,123 @@ def parse_day(x):
         return None
 
 
+def _money(v):
+    return f"{v:,.0f} сом".replace(",", " ")
+
+
+def show_period_summary(sales_data, ops_data, products_data, payments_data, clients_data):
+    from report_logic import period_summary
+    st.subheader("🧾 Сводка за период")
+    today = datetime.now().date()
+    c1, c2 = st.columns([1, 2])
+    mode = c1.radio("Период", ["Месяц", "Даты с — по"], horizontal=True, key="ps_mode")
+    if mode == "Месяц":
+        months = []
+        y, m = today.year, today.month
+        for _ in range(24):
+            months.append((y, m))
+            y, m = (y - 1, 12) if m == 1 else (y, m - 1)
+        ym = c2.selectbox("Месяц", months, format_func=lambda t: f"{t[1]:02d}.{t[0]}", key="ps_month")
+        p_start = datetime(ym[0], ym[1], 1).date()
+        nxt = datetime(ym[0] + (ym[1] == 12), ym[1] % 12 + 1, 1).date()
+        p_end = nxt - timedelta(days=1)
+    else:
+        period = c2.date_input("С — по", value=(today.replace(day=1), today), key="ps_range")
+        if isinstance(period, tuple) and len(period) == 2:
+            p_start, p_end = period
+        else:
+            p_start = p_end = period if not isinstance(period, tuple) else period[0]
+
+    s = period_summary(p_start, p_end, sales_data, ops_data, products_data, payments_data, clients_data)
+    st.caption(f"Период: **{p_start.strftime('%d.%m.%Y')} — {p_end.strftime('%d.%m.%Y')}**")
+
+    st.markdown("##### 📝 Рассрочка")
+    a, b, c, d = st.columns(4)
+    a.metric("Выдано рассрочек", f"{s['issued_count']} шт.", _money(s["issued_goods"]), delta_color="off")
+    b.metric("Долг по выданным (с наценкой)", _money(s["issued_credit"]))
+    c.metric("Погашено за период", _money(s["repay_net"]), f"{s['repay_count']} оплат", delta_color="off")
+    d.metric("Первые взносы", _money(s["down_sum"]))
+    if s["annul_count"]:
+        st.caption(f"Погашений всего {_money(s['repay_sum'])}, аннулировано {s['annul_count']} на {_money(s['annul_sum'])}.")
+    st.caption(f"По сроку: раньше — **{s['early']}**, в срок — **{s['ontime']}**, позже — **{s['late']}**")
+
+    st.markdown("##### 💵 Товар и касса")
+    a, b, c, d = st.columns(4)
+    a.metric("Принято товаров (закупка)", _money(s["received_cost"]), f"{s['received_qty']:,} шт.".replace(",", " "), delta_color="off")
+    b.metric("Оплачено контрагентам", _money(s["supplier"]))
+    c.metric("Расходы на нужды", _money(s["needs"]))
+    d.metric("Прочие расходы", _money(s["other_out"]))
+    a, b, _, _ = st.columns(4)
+    a.metric("Продажи за наличные", _money(s["cash_sales"]))
+    b.metric("Взносы в кассу", _money(s["deposits"]))
+
+    st.markdown("##### 📅 Погашения по дням")
+    repay_df = pd.DataFrame([{
+        "Дата оплаты": r["date"].strftime("%d.%m.%Y"), "Время": r["time"], "Клиент": r["client"],
+        "Сумма": int(r["amount"]),
+        "Ближайший платёж по графику": r["due"].strftime("%d.%m.%Y") if r["due"] else "—",
+        "Срок": r["timing"],
+    } for r in s["repay_rows"]])
+    if repay_df.empty:
+        st.info("За период погашений нет")
+    else:
+        st.dataframe(repay_df, width="stretch", hide_index=True)
+        st.caption("«Срок» — ориентир: сравнение дня оплаты с ближайшей датой в графике клиента.")
+        by_day = repay_df.groupby("Дата оплаты", sort=False)["Сумма"].agg(["count", "sum"]).reset_index()
+        by_day.columns = ["Дата", "Оплат", "Сумма"]
+        with st.expander("Итого по дням"):
+            st.dataframe(by_day, width="stretch", hide_index=True)
+
+    issued_df = pd.DataFrame([{
+        "Дата": r["date"].strftime("%d.%m.%Y"), "Клиент": r["client"], "Договор": r["contract"],
+        "Товар": int(r["goods"]), "Взнос": int(r["down"]), "Долг": int(r["credit"]),
+    } for r in s["issued_rows"]])
+    with st.expander(f"Выданные рассрочки ({s['issued_count']})"):
+        if issued_df.empty:
+            st.info("Нет")
+        else:
+            st.dataframe(issued_df, width="stretch", hide_index=True)
+
+    summary_df = pd.DataFrame([
+        {"Показатель": "Выдано рассрочек, шт.", "Сумма": s["issued_count"]},
+        {"Показатель": "Выдано рассрочек (товар)", "Сумма": s["issued_goods"]},
+        {"Показатель": "Долг по выданным", "Сумма": s["issued_credit"]},
+        {"Показатель": "Первые взносы", "Сумма": s["down_sum"]},
+        {"Показатель": "Погашено (за вычетом аннулирований)", "Сумма": s["repay_net"]},
+        {"Показатель": "Погашений, шт.", "Сумма": s["repay_count"]},
+        {"Показатель": "Принято товаров (закупка)", "Сумма": s["received_cost"]},
+        {"Показатель": "Оплачено контрагентам", "Сумма": s["supplier"]},
+        {"Показатель": "Расходы на нужды", "Сумма": s["needs"]},
+        {"Показатель": "Прочие расходы", "Сумма": s["other_out"]},
+        {"Показатель": "Продажи за наличные", "Сумма": s["cash_sales"]},
+        {"Показатель": "Взносы в кассу", "Сумма": s["deposits"]},
+    ])
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        summary_df.to_excel(writer, index=False, sheet_name="Сводка")
+        if not repay_df.empty:
+            repay_df.to_excel(writer, index=False, sheet_name="Погашения")
+        if not issued_df.empty:
+            issued_df.to_excel(writer, index=False, sheet_name="Выдано")
+    buffer.seek(0)
+    st.download_button("📥 Скачать сводку (Excel)", data=buffer, file_name=f"Svodka_{p_start}_{p_end}.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
+
+
 def show_reports_page():
     user_role = st.session_state.get("user", {}).get("role", "Кассир")
 
     if user_role == "Администратор":
         st.header("📊 Аналитика и отчеты (Панель Администратора)")
-        tab_full, tab_credit, tab_sales = st.tabs([
+        tab_period, tab_full, tab_credit, tab_sales = st.tabs([
+            "🧾 Сводка за период",
             "📦 Полный отчет",
             "👥 Рассрочки по клиентам",
             "📋 Продажи и аналитика"
         ])
     else:
         st.header("📋 Ежедневный отчет по продажам (Панель Кассира)")
-        tab_full = tab_credit = None
+        tab_period = tab_full = tab_credit = None
         tab_sales = st.container()
 
     try:
@@ -59,6 +163,10 @@ def show_reports_page():
     clients_data = clients_all.data or []
     payments_data = payments_all.data or []
     clients_map = {c["id"]: c for c in clients_data}
+
+    if user_role == "Администратор":
+        with tab_period:
+            show_period_summary(sales_data, ops_data, products_data, payments_data, clients_data)
 
     # =========================================================================
     # ВКЛАДКА 1: ПОЛНЫЙ ОТЧЕТ
