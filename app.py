@@ -1,5 +1,5 @@
 # Магазин «Сулайман-Тоо» — Главный модуль: Авторизация и Маршрутизация
-# Версия программы: 1.20.0 (отчёты: сводка за период с погашениями)
+# Версия программы: 1.20.1 (кассир: скрыты Склад, Касса, Долг с поставщиком)
 
 import streamlit as st
 from utils import (
@@ -12,6 +12,7 @@ from database import (authenticate_user, check_has_users, hash_password, supabas
                       create_session_token, user_from_session_token, delete_session_token)
 from supplier_logic import SUPPLIER_ROLE
 from supplier_debt import show_supplier_debt_page
+from menu_access import menu_options_for_role, can_open_menu, sanitize_menu_choice, DEFAULT_MENU
 
 from stock import show_stock_page
 from sales import show_sales_page
@@ -80,7 +81,7 @@ if user_role == SUPPLIER_ROLE:
     # Поставщик видит только свой блок долга — ни кассы, ни склада, ни клиентов
     if st.sidebar.button("🚪 Выйти", width="stretch"):
         _logout()
-    st.sidebar.caption("Магазин «Сулайман-Тоо» v1.20.0")
+    st.sidebar.caption("Магазин «Сулайман-Тоо» v1.20.1")
     show_supplier_debt_page()
     st.stop()
 
@@ -124,11 +125,10 @@ else:
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🛠️ Главное меню")
 
-menu_options = ["🛒 Продажи", "📦 Склад", "📋 Инвентаризация", "📤 Архив", "👥 Клиенты", "📱 Выписка клиента", "🛠️ Правка рассрочек", "💵 Касса", "📊 Отчеты", "🤝 Долг с поставщиком"]
-if user_role != "Администратор":
-    menu_options = [item for item in menu_options if item not in ("📤 Архив", "🛠️ Правка рассрочек")]
-if "menu_choice" not in st.session_state or st.session_state.menu_choice not in menu_options:
-    st.session_state.menu_choice = "🛒 Продажи"
+menu_options = menu_options_for_role(user_role)
+st.session_state.menu_choice = sanitize_menu_choice(
+    user_role, st.session_state.get("menu_choice")
+)
 
 choice = st.sidebar.radio(
     "Перейти в раздел:",
@@ -137,6 +137,12 @@ choice = st.sidebar.radio(
     key="menu_radio"
 )
 st.session_state.menu_choice = choice
+
+# Защита диспетчера: устаревший выбор сессии / прямой вызов не открывает скрытые разделы
+if not can_open_menu(user_role, choice):
+    choice = DEFAULT_MENU
+    st.session_state.menu_choice = choice
+    st.warning("⛔ Этот раздел недоступен для вашей роли.")
 
 if choice == "👥 Клиенты" and st.session_state.get("_last_menu") != "👥 Клиенты":
     for k in ("credit_client_pick", "credit_sale_pick", "credit_pay_pick", "credit_bound_client", "_clients_entry"):
@@ -148,7 +154,7 @@ if st.sidebar.button("🔄 Обновить данные", width="stretch"):
     st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Магазин «Сулайман-Тоо» v1.20.0")
+st.sidebar.caption("Магазин «Сулайман-Тоо» v1.20.1")
 
 if choice == "📦 Склад":
     show_stock_page()
